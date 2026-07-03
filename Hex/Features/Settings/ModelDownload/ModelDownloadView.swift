@@ -1,4 +1,5 @@
 import ComposableArchitecture
+import HexCore
 import Inject
 import SwiftUI
 
@@ -26,7 +27,8 @@ public struct ModelDownloadView: View {
 					style: .error
 				)
 			}
-			if !store.anyModelDownloaded {
+			if !store.anyModelDownloaded,
+			   !CloudTranscriptionModel.isCloud(store.hexSettings.selectedModel) {
 				AutoDownloadBannerView(
 					title: "Download a model to start transcribing",
 					subtitle: "Choose a model below and tap download. Without a model, recordings can't be transcribed.",

@@ -217,7 +217,12 @@ struct AppFeature {
         await send(.modelStatusEvaluated(false))
         return
       }
-      let isReady = await transcription.isModelDownloaded(selectedModel)
+      let isReady: Bool
+      if CloudTranscriptionModel.isCloud(selectedModel) {
+        isReady = true
+      } else {
+        isReady = await transcription.isModelDownloaded(selectedModel)
+      }
       $modelBootstrapState.withLock { state in
         state.modelIdentifier = selectedModel
         if state.modelDisplayName?.isEmpty ?? true {

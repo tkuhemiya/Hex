@@ -29,6 +29,7 @@ public struct ModelInfo: Equatable, Identifiable {
 public struct CuratedModelInfo: Equatable, Identifiable, Codable {
 	public let displayName: String
 	public let internalName: String
+	public let provider: String?
 	public let size: String
 	public let accuracyStars: Int
 	public let speedStars: Int
@@ -37,6 +38,9 @@ public struct CuratedModelInfo: Equatable, Identifiable, Codable {
 	public var id: String { internalName }
 
 	public var badge: String? {
+		if isCloud {
+			return "CLOUD"
+		}
 		switch parakeetModel {
 		case .englishV2:
 			return "BEST FOR ENGLISH"
@@ -55,9 +59,14 @@ public struct CuratedModelInfo: Equatable, Identifiable, Codable {
 		parakeetModel != nil
 	}
 
+	var isCloud: Bool {
+		CloudTranscriptionModel.isCloud(internalName)
+	}
+
 	public init(
 		displayName: String,
 		internalName: String,
+		provider: String? = nil,
 		size: String,
 		accuracyStars: Int,
 		speedStars: Int,
@@ -66,6 +75,7 @@ public struct CuratedModelInfo: Equatable, Identifiable, Codable {
 	) {
 		self.displayName = displayName
 		self.internalName = internalName
+		self.provider = provider
 		self.size = size
 		self.accuracyStars = accuracyStars
 		self.speedStars = speedStars
@@ -74,11 +84,14 @@ public struct CuratedModelInfo: Equatable, Identifiable, Codable {
 	}
 
 	// Codable (isDownloaded is set at runtime)
-	private enum CodingKeys: String, CodingKey { case displayName, internalName, size, accuracyStars, speedStars, storageSize }
+	private enum CodingKeys: String, CodingKey {
+		case displayName, internalName, provider, size, accuracyStars, speedStars, storageSize
+	}
 	public init(from decoder: Decoder) throws {
 		let c = try decoder.container(keyedBy: CodingKeys.self)
 		displayName = try c.decode(String.self, forKey: .displayName)
 		internalName = try c.decode(String.self, forKey: .internalName)
+		provider = try c.decodeIfPresent(String.self, forKey: .provider)
 		size = try c.decode(String.self, forKey: .size)
 		accuracyStars = try c.decode(Int.self, forKey: .accuracyStars)
 		speedStars = try c.decode(Int.self, forKey: .speedStars)
@@ -138,11 +151,13 @@ public struct ModelDownloadFeature {
 		// Convenience computed vars
 		var selectedModel: String { hexSettings.selectedModel }
 		var selectedModelIsDownloaded: Bool {
-			availableModels[id: selectedModel]?.isDownloaded ?? false
+			if CloudTranscriptionModel.isCloud(selectedModel) { return true }
+			return availableModels[id: selectedModel]?.isDownloaded ?? false
 		}
 
 		var anyModelDownloaded: Bool {
 			availableModels.contains(where: { $0.isDownloaded })
+				|| curatedModels.contains(where: { $0.isCloud && $0.isDownloaded })
 		}
 	}
 
@@ -285,7 +300,9 @@ public struct ModelDownloadFeature {
 			var curated = CuratedModelLoader.load()
 			for idx in curated.indices {
 				let internalName = curated[idx].internalName
-				if let match = available.first(where: { ModelPatternMatcher.matches(internalName, $0.name) }) {
+				if curated[idx].isCloud {
+					curated[idx].isDownloaded = true
+				} else if let match = available.first(where: { ModelPatternMatcher.matches(internalName, $0.name) }) {
 					curated[idx].isDownloaded = match.isDownloaded
 				} else {
 					curated[idx].isDownloaded = false
@@ -293,7 +310,9 @@ public struct ModelDownloadFeature {
 			}
 			state.curatedModels = IdentifiedArrayOf(uniqueElements: curated)
 			updateBootstrapState(&state)
-			if !state.anyModelDownloaded && !state.hexSettings.hasCompletedModelBootstrap {
+			if CloudTranscriptionModel.isCloud(state.hexSettings.selectedModel) {
+				state.$hexSettings.withLock { $0.hasCompletedModelBootstrap = true }
+			} else if !state.anyModelDownloaded && !state.hexSettings.hasCompletedModelBootstrap {
 				let preferred = state.recommendedModel.isEmpty ? state.hexSettings.selectedModel : state.recommendedModel
 				if !preferred.isEmpty {
 					state.$hexSettings.withLock { $0.selectedModel = preferred }
@@ -306,6 +325,7 @@ public struct ModelDownloadFeature {
 
 		case .downloadSelectedModel:
 			guard !state.hexSettings.selectedModel.isEmpty else { return .none }
+			guard !CloudTranscriptionModel.isCloud(state.hexSettings.selectedModel) else { return .none }
 			state.downloadError = nil
 			state.isDownloading = true
 			let selected = state.hexSettings.selectedModel
@@ -398,6 +418,7 @@ public struct ModelDownloadFeature {
 
 		case .deleteSelectedModel:
 			guard !state.selectedModel.isEmpty else { return .none }
+			guard !CloudTranscriptionModel.isCloud(state.selectedModel) else { return .none }
 			state.$modelBootstrapState.withLock { $0.isModelReady = false }
 			return .run { [state] send in
 				do {

@@ -77,7 +77,7 @@ struct CuratedRow: View {
 							Image(systemName: "checkmark.circle.fill")
 								.foregroundStyle(.green)
 								.frame(width: 24, height: 24)
-								.help("Downloaded")
+								.help(model.isCloud ? "Ready (cloud)" : "Downloaded")
 						} else {
 							Button {
 								store.send(.selectModel(model.internalName))
@@ -106,17 +106,19 @@ struct CuratedRow: View {
 		.buttonStyle(.plain)
 		// Keep context menu as an alternative path
 		.contextMenu {
-			if store.isDownloading, store.downloadingModelName == model.internalName {
-				Button("Cancel Download", role: .destructive) { store.send(.cancelDownload) }
-			}
-			if model.isDownloaded || (store.isDownloading && store.downloadingModelName == model.internalName) {
-				Button("Show in Finder") { store.send(.openModelLocation) }
-			}
-			if model.isDownloaded {
-				Divider()
-				Button("Delete", role: .destructive) {
-					store.send(.selectModel(model.internalName))
-					store.send(.deleteSelectedModel)
+			if !model.isCloud {
+				if store.isDownloading, store.downloadingModelName == model.internalName {
+					Button("Cancel Download", role: .destructive) { store.send(.cancelDownload) }
+				}
+				if model.isDownloaded || (store.isDownloading && store.downloadingModelName == model.internalName) {
+					Button("Show in Finder") { store.send(.openModelLocation) }
+				}
+				if model.isDownloaded {
+					Divider()
+					Button("Delete", role: .destructive) {
+						store.send(.selectModel(model.internalName))
+						store.send(.deleteSelectedModel)
+					}
 				}
 			}
 		}

@@ -88,6 +88,14 @@ actor TranscriptionClientLive {
   /// Ensures the given `variant` model is downloaded and loaded, reporting
   /// overall progress (0%–50% for downloading, 50%–100% for loading).
   func downloadAndLoadModel(variant: String, progressCallback: @escaping (Progress) -> Void) async throws {
+    // Cloud models need no download or load.
+    if CloudTranscriptionModel.isCloud(variant) {
+      let overallProgress = Progress(totalUnitCount: 100)
+      overallProgress.completedUnitCount = 100
+      progressCallback(overallProgress)
+      currentModelName = variant
+      return
+    }
     // If Parakeet, use Parakeet client path
     if isParakeet(variant) {
       try await parakeet.ensureLoaded(modelName: variant, progress: progressCallback)
@@ -140,6 +148,10 @@ actor TranscriptionClientLive {
 
   /// Deletes a model from disk if it exists
   func deleteModel(variant: String) async throws {
+    if CloudTranscriptionModel.isCloud(variant) {
+      if currentModelName == variant { unloadCurrentModel() }
+      return
+    }
     if isParakeet(variant) {
       try await parakeet.deleteCaches(modelName: variant)
       if currentModelName == variant { unloadCurrentModel() }
@@ -167,6 +179,9 @@ actor TranscriptionClientLive {
   /// Returns `true` if the model is already downloaded to the local folder.
   /// Performs a thorough check to ensure the model files are actually present and usable.
   func isModelDownloaded(_ modelName: String) async -> Bool {
+    if CloudTranscriptionModel.isCloud(modelName) {
+      return true
+    }
     if isParakeet(modelName) {
       let available = await parakeet.isModelAvailable(modelName)
       parakeetLogger.debug("Parakeet available? \(available)")
@@ -228,6 +243,21 @@ actor TranscriptionClientLive {
     progressCallback: @escaping (Progress) -> Void
   ) async throws -> String {
     let startAll = Date()
+    if CloudTranscriptionModel.isCloud(model) {
+      transcriptionLogger.notice("Transcribing with cloud model=\(model) file=\(url.lastPathComponent)")
+      let startTx = Date()
+      let apiKey = APIKeyClient.liveValue.getOpenAIKey()
+      let text = try await OpenAITranscriptionClient().transcribe(
+        url: url,
+        model: model,
+        language: options.language,
+        apiKey: apiKey
+      )
+      currentModelName = model
+      transcriptionLogger.info("Cloud transcription took \(String(format: "%.2f", Date().timeIntervalSince(startTx)))s")
+      transcriptionLogger.info("Cloud request total elapsed \(String(format: "%.2f", Date().timeIntervalSince(startAll)))s")
+      return text
+    }
     if isParakeet(model) {
       transcriptionLogger.notice("Transcribing with Parakeet model=\(model) file=\(url.lastPathComponent)")
       let startLoad = Date()

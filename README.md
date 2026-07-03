@@ -1,42 +1,54 @@
-# Hex — Voice → Text
+# Hex (local fork)
 
-Press-and-hold a hotkey to transcribe your voice and paste the result wherever you're typing.
+Personal fork with **OpenAI cloud transcription** (`gpt-4o-mini-transcribe-2025-12-15`). Not upstream Hex — build and install on this machine only.
 
-**[Download Hex for macOS](https://hex-updates.s3.us-east-1.amazonaws.com/hex-latest.dmg)**
+## Requirements
 
-> **Note:** Hex is currently only available for **Apple Silicon** Macs.
+- macOS 14+, Apple Silicon
+- Xcode installed (for `xcodebuild` only — no need to open the app)
 
-Or download via homebrew:
 ```bash
-brew install --cask kitlangton-hex
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+sudo xcodebuild -license accept
 ```
 
-I've opened-sourced the project in the hopes that others will find it useful! Hex supports both [Parakeet TDT v3](https://github.com/FluidInference/FluidAudio) via the awesome [FluidAudio](https://github.com/FluidInference/FluidAudio) (the default—it's frickin' unbelievable: fast, multilingual, and cloud-optimized) and the awesome [WhisperKit](https://github.com/argmaxinc/WhisperKit) for on-device transcription. We use the incredible [Swift Composable Architecture](https://github.com/pointfreeco/swift-composable-architecture) for structuring the app. Please open issues with any questions or feedback! ❤️
+## Build & install
 
-## Instructions
+```bash
+./scripts/build.sh          # Release
+./scripts/install.sh
 
-Once you open Hex, you'll need to grant it microphone and accessibility permissions—so it can record your voice and paste the transcribed text into any application, respectively.
+# Debug (separate bundle ID, won't clash with official Hex):
+./scripts/build.sh Debug
+./scripts/install.sh Debug
+```
 
-Once you've configured a global hotkey, there are **two recording modes**:
+Output: `build/Build/Products/Release/Hex.app`
 
-1. **Press-and-hold** the hotkey to begin recording, say whatever you want, and then release the hotkey to start the transcription process. 
-2. **Double-tap** the hotkey to *lock recording*, say whatever you want, and then **tap** the hotkey once more to start the transcription process.
+Launch:
 
-## Contributing
+```bash
+open build/Build/Products/Release/Hex.app
+```
 
-**Issue reports are welcome!** If you encounter bugs or have feature requests, please [open an issue](https://github.com/kitlangton/Hex/issues).
+## Setup
 
-**Note on Pull Requests:** At this stage, I'm not actively reviewing code contributions for significant features or core logic changes. The project is evolving rapidly and it's easier for me to work directly from issue reports. Bug fixes and documentation improvements are still appreciated, but please open an issue first to discuss before investing time in a large PR. Thanks for understanding!
+1. Settings → Transcription Model → paste **OpenAI API key**
+2. Cloud model is selected by default
+3. Grant Microphone, Accessibility, and Input Monitoring when prompted
 
-### Changelog workflow
+Local Parakeet/Whisper models are still in the picker if you want them.
 
-- **For AI agents:** Run `bun run changeset:add-ai <type> "summary"` (e.g., `bun run changeset:add-ai patch "Fix clipboard timing"`) to create a changeset non-interactively.
-- **For humans:** Run `bunx changeset` when your PR needs release notes. Pick `patch`, `minor`, or `major` and write a short summary—this creates a `.changeset/*.md` fragment.
-- Check what will ship with `bunx changeset status --verbose`.
-- `npm run sync-changelog` (or `bun run tools/scripts/sync-changelog.ts`) mirrors the root `CHANGELOG.md` into `Hex/Resources/changelog.md` so the in-app sheet always matches GitHub releases.
-- The release tool consumes the pending fragments, bumps `package.json` + `Info.plist`, regenerates `CHANGELOG.md`, and feeds the resulting section to GitHub + Sparkle automatically. Releases fail fast if no changesets are queued, so you can't forget.
-- If you truly need to ship without pending Changesets (for example, re-running a failed publish), the release script will now prompt you to confirm and choose a `patch`/`minor`/`major` bump interactively before continuing.
+## Troubleshooting
 
-## License
+**`Macro must be enabled before it can be used`** — use `./scripts/build.sh` (includes `-skipMacroValidation`).
 
-This project is licensed under the MIT License. See `LICENSE` for details.
+**Signing errors** — `export DEVELOPMENT_TEAM=YOUR_TEAM_ID` then rebuild, or use the default ad-hoc signing in the script.
+
+**Release builds** may pull upstream Sparkle updates and overwrite this fork. Prefer Debug, or disable updates in Settings.
+
+## Tests
+
+```bash
+cd HexCore && swift test
+```

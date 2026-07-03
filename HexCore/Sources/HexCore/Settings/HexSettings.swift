@@ -60,7 +60,7 @@ public struct HexSettings: Codable, Equatable, Sendable {
 		hotkey: HotKey = .init(key: nil, modifiers: [.option]),
 		openOnLogin: Bool = false,
 		showDockIcon: Bool = true,
-		selectedModel: String = ParakeetModel.multilingualV3.identifier,
+		selectedModel: String = CloudTranscriptionModel.gpt4oMiniTranscribe.identifier,
 		useClipboardPaste: Bool = true,
 		preventSystemSleep: Bool = true,
 		recordingAudioBehavior: RecordingAudioBehavior = .doNothing,

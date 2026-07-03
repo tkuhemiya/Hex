@@ -58,6 +58,7 @@ struct SettingsFeature {
     // Model Management
     var modelDownload = ModelDownloadFeature.State()
     var shouldFlashModelSection = false
+    var openAIAPIKey: String = ""
 
   }
 
@@ -96,6 +97,7 @@ struct SettingsFeature {
 
     // Model Management
     case modelDownload(ModelDownloadFeature.Action)
+    case setOpenAIAPIKey(String)
     
     // History Management
     case toggleSaveTranscriptionHistory(Bool)
@@ -120,6 +122,7 @@ struct SettingsFeature {
   @Dependency(\.recording) var recording
   @Dependency(\.soundEffects) var soundEffects
   @Dependency(\.transcriptPersistence) var transcriptPersistence
+  @Dependency(\.apiKey) var apiKey
 
   private func deleteAudioEffect(for transcripts: [Transcript]) -> Effect<Action> {
     .run { [transcriptPersistence] _ in
@@ -231,6 +234,8 @@ struct SettingsFeature {
         return .none
 
       case .task:
+        state.openAIAPIKey = apiKey.getOpenAIKey() ?? ""
+
         if let url = Bundle.main.url(forResource: "languages", withExtension: "json"),
           let data = try? Data(contentsOf: url),
           let languages = try? JSONDecoder().decode([Language].self, from: data)
@@ -510,6 +515,12 @@ struct SettingsFeature {
         return .none
 
       // Model Management
+      case let .setOpenAIAPIKey(key):
+        state.openAIAPIKey = key
+        return .run { [apiKey] _ in
+          try? apiKey.setOpenAIKey(key.isEmpty ? nil : key)
+        }
+
       case .modelDownload:
         return .none
       

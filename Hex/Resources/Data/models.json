@@ -1,5 +1,14 @@
 [
   {
+    "displayName": "GPT-4o Mini Transcribe",
+    "internalName": "gpt-4o-mini-transcribe-2025-12-15",
+    "provider": "openai",
+    "size": "Cloud",
+    "accuracyStars": 5,
+    "speedStars": 5,
+    "storageSize": "—"
+  },
+  {
     "displayName": "Parakeet TDT v2",
     "internalName": "parakeet-tdt-0.6b-v2-coreml",
     "size": "English",
