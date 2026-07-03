@@ -45,8 +45,6 @@ Transcription uses OpenAI cloud only — an API key is required for every record
 
 **Signing errors** — `export DEVELOPMENT_TEAM=YOUR_TEAM_ID` then rebuild, or use the default ad-hoc signing in the script.
 
-**Release builds** may pull upstream Sparkle updates and overwrite this fork. Prefer Debug, or disable updates in Settings.
-
 ## Tests
 
 ```bash

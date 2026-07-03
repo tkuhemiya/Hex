@@ -303,7 +303,7 @@ struct AppView: View {
         HistoryView(store: store.scope(state: \.history, action: \.history))
           .navigationTitle("History")
       case .about:
-        AboutView(store: store.scope(state: \.settings, action: \.settings))
+        AboutView()
           .navigationTitle("About")
       }
     }
