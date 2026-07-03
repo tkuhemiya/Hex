@@ -42,7 +42,6 @@ public struct HexSettings: Codable, Equatable, Sendable {
 	public var saveTranscriptionHistory: Bool
 	public var maxHistoryEntries: Int?
 	public var pasteLastTranscriptHotkey: HotKey?
-	public var hasCompletedModelBootstrap: Bool
 	public var hasCompletedStorageMigration: Bool
 	public var wordRemovalsEnabled: Bool
 	public var wordRemovals: [WordRemoval]
@@ -74,7 +73,6 @@ public struct HexSettings: Codable, Equatable, Sendable {
 		saveTranscriptionHistory: Bool = true,
 		maxHistoryEntries: Int? = nil,
 		pasteLastTranscriptHotkey: HotKey? = HexSettings.defaultPasteLastTranscriptHotkey,
-		hasCompletedModelBootstrap: Bool = false,
 		hasCompletedStorageMigration: Bool = false,
 		wordRemovalsEnabled: Bool = false,
 		wordRemovals: [WordRemoval] = HexSettings.defaultWordRemovals,
@@ -99,7 +97,6 @@ public struct HexSettings: Codable, Equatable, Sendable {
 		self.saveTranscriptionHistory = saveTranscriptionHistory
 		self.maxHistoryEntries = maxHistoryEntries
 		self.pasteLastTranscriptHotkey = pasteLastTranscriptHotkey
-		self.hasCompletedModelBootstrap = hasCompletedModelBootstrap
 		self.hasCompletedStorageMigration = hasCompletedStorageMigration
 		self.wordRemovalsEnabled = wordRemovalsEnabled
 		self.wordRemovals = wordRemovals
@@ -114,6 +111,13 @@ public struct HexSettings: Codable, Equatable, Sendable {
 			try field.decode(into: &self, from: container)
 		}
 		normalizeDoubleTapSettings()
+		normalizeCloudOnlySettings()
+	}
+
+	private mutating func normalizeCloudOnlySettings() {
+		if !CloudTranscriptionModel.isCloud(selectedModel) {
+			selectedModel = CloudTranscriptionModel.gpt4oMiniTranscribe.identifier
+		}
 	}
 
 	public func encode(to encoder: Encoder) throws {
@@ -147,7 +151,6 @@ private enum HexSettingKey: String, CodingKey, CaseIterable {
 	case saveTranscriptionHistory
 	case maxHistoryEntries
 	case pasteLastTranscriptHotkey
-	case hasCompletedModelBootstrap
 	case hasCompletedStorageMigration
 	case wordRemovalsEnabled
 	case wordRemovals
@@ -272,7 +275,6 @@ private enum HexSettingsSchema {
 				try container.encodeIfPresent(value, forKey: key)
 			}
 		).eraseToAny(),
-		SettingsField(.hasCompletedModelBootstrap, keyPath: \.hasCompletedModelBootstrap, default: defaults.hasCompletedModelBootstrap).eraseToAny(),
 		SettingsField(.hasCompletedStorageMigration, keyPath: \.hasCompletedStorageMigration, default: defaults.hasCompletedStorageMigration).eraseToAny(),
 		SettingsField(.wordRemovalsEnabled, keyPath: \.wordRemovalsEnabled, default: defaults.wordRemovalsEnabled).eraseToAny(),
 		SettingsField(

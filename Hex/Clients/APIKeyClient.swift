@@ -38,6 +38,7 @@ enum KeychainStore {
     if status == errSecItemNotFound {
       var addQuery = query
       addQuery[kSecValueData as String] = data
+      addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
       guard SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess else {
         throw KeychainError.saveFailed
       }

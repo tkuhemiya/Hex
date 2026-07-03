@@ -27,7 +27,7 @@ struct AppFeature {
 		var history: HistoryFeature.State = .init()
 		var activeTab: ActiveTab = .settings
 		@Shared(.hexSettings) var hexSettings: HexSettings
-		@Shared(.modelBootstrapState) var modelBootstrapState: ModelBootstrapState
+		@Shared(.transcriptionReadinessState) var transcriptionReadinessState: TranscriptionReadinessState
 
     // Permission state
     var microphonePermission: PermissionStatus = .notDetermined
@@ -53,8 +53,8 @@ struct AppFeature {
 
   @Dependency(\.keyEventMonitor) var keyEventMonitor
   @Dependency(\.pasteboard) var pasteboard
-  @Dependency(\.transcription) var transcription
   @Dependency(\.permissions) var permissions
+  @Dependency(\.apiKey) var apiKey
 
   var body: some ReducerOf<Self> {
     BindingReducer()
@@ -93,12 +93,12 @@ struct AppFeature {
         }
         
       case .transcription(.modelMissing):
-        HexLog.app.notice("Model missing - activating app and switching to settings")
+        HexLog.app.notice("API key missing - activating app and switching to settings")
         state.activeTab = .settings
         state.settings.shouldFlashModelSection = true
         return .run { send in
           await MainActor.run {
-            HexLog.app.notice("Activating app for model missing")
+            HexLog.app.notice("Activating app for missing API key")
             NSApplication.shared.activate(ignoringOtherApps: true)
           }
           try? await Task.sleep(for: .seconds(2))
@@ -211,32 +211,22 @@ struct AppFeature {
   private func ensureSelectedModelReadiness() -> Effect<Action> {
     .run { send in
       @Shared(.hexSettings) var hexSettings: HexSettings
-      @Shared(.modelBootstrapState) var modelBootstrapState: ModelBootstrapState
+      @Shared(.transcriptionReadinessState) var transcriptionReadinessState: TranscriptionReadinessState
       let selectedModel = hexSettings.selectedModel
       guard !selectedModel.isEmpty else {
         await send(.modelStatusEvaluated(false))
         return
       }
-      let isReady: Bool
-      if CloudTranscriptionModel.isCloud(selectedModel) {
-        isReady = true
-      } else {
-        isReady = await transcription.isModelDownloaded(selectedModel)
-      }
-      $modelBootstrapState.withLock { state in
-        state.modelIdentifier = selectedModel
-        if state.modelDisplayName?.isEmpty ?? true {
-          state.modelDisplayName = selectedModel
-        }
-        state.isModelReady = isReady
-        if isReady {
+      let hasKey = apiKey.getOpenAIKey().map { !$0.isEmpty } ?? false
+      $transcriptionReadinessState.withLock { state in
+        state.isAPIKeyConfigured = hasKey
+        if hasKey {
           state.lastError = nil
-          state.progress = 1
         } else {
-          state.progress = 0
+          state.lastError = "OpenAI API key is not configured"
         }
       }
-      await send(.modelStatusEvaluated(isReady))
+      await send(.modelStatusEvaluated(hasKey))
     }
   }
 

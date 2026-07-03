@@ -45,6 +45,7 @@ struct SettingsFeature {
     @Shared(.isRemappingScratchpadFocused) var isRemappingScratchpadFocused: Bool = false
     @Shared(.transcriptionHistory) var transcriptionHistory: TranscriptionHistory
     @Shared(.hotkeyPermissionState) var hotkeyPermissionState: HotkeyPermissionState
+    @Shared(.transcriptionReadinessState) var transcriptionReadinessState: TranscriptionReadinessState
 
     var languages: IdentifiedArrayOf<Language> = []
     var currentModifiers: Modifiers = .init(modifiers: [])
@@ -56,9 +57,11 @@ struct SettingsFeature {
     var defaultInputDeviceName: String?
 
     // Model Management
-    var modelDownload = ModelDownloadFeature.State()
+    var cloudModel = CloudModelFeature.State()
     var shouldFlashModelSection = false
-    var openAIAPIKey: String = ""
+    /// Draft text while the user types a new key. Never pre-filled from the keychain.
+    var openAIAPIKeyDraft: String = ""
+    var hasOpenAIAPIKey: Bool = false
 
   }
 
@@ -96,8 +99,11 @@ struct SettingsFeature {
     case availableInputDevicesLoaded([AudioInputDevice], String?)
 
     // Model Management
-    case modelDownload(ModelDownloadFeature.Action)
-    case setOpenAIAPIKey(String)
+    case cloudModel(CloudModelFeature.Action)
+    case setOpenAIAPIKeyDraft(String)
+    case saveOpenAIAPIKey
+    case openAIAPIKeySaved
+    case clearOpenAIAPIKey
     
     // History Management
     case toggleSaveTranscriptionHistory(Bool)
@@ -217,8 +223,8 @@ struct SettingsFeature {
   var body: some ReducerOf<Self> {
     BindingReducer()
 
-    Scope(state: \.modelDownload, action: \.modelDownload) {
-      ModelDownloadFeature()
+    Scope(state: \.cloudModel, action: \.cloudModel) {
+      CloudModelFeature()
     }
 
     Reduce { state, action in
@@ -234,7 +240,12 @@ struct SettingsFeature {
         return .none
 
       case .task:
-        state.openAIAPIKey = apiKey.getOpenAIKey() ?? ""
+        let hasKey = apiKey.getOpenAIKey().map { !$0.isEmpty } ?? false
+        state.hasOpenAIAPIKey = hasKey
+        state.$transcriptionReadinessState.withLock {
+          $0.isAPIKeyConfigured = hasKey
+          $0.lastError = hasKey ? nil : "OpenAI API key is not configured"
+        }
 
         if let url = Bundle.main.url(forResource: "languages", withExtension: "json"),
           let data = try? Data(contentsOf: url),
@@ -259,7 +270,7 @@ struct SettingsFeature {
             )
           }
 
-          await send(.modelDownload(.fetchModels))
+          await send(.cloudModel(.loadModels))
           await send(.loadAvailableInputDevices)
 
           // Listen for device connection/disconnection notifications
@@ -515,13 +526,43 @@ struct SettingsFeature {
         return .none
 
       // Model Management
-      case let .setOpenAIAPIKey(key):
-        state.openAIAPIKey = key
-        return .run { [apiKey] _ in
-          try? apiKey.setOpenAIKey(key.isEmpty ? nil : key)
+      case let .setOpenAIAPIKeyDraft(draft):
+        state.openAIAPIKeyDraft = draft
+        return .none
+
+      case .saveOpenAIAPIKey:
+        let draft = state.openAIAPIKeyDraft
+        guard !draft.isEmpty else { return .none }
+        return .run { [apiKey] send in
+          do {
+            try apiKey.setOpenAIKey(draft)
+            await send(.openAIAPIKeySaved)
+          } catch {
+            settingsLogger.error("Failed to save OpenAI API key: \(error.localizedDescription)")
+          }
         }
 
-      case .modelDownload:
+      case .openAIAPIKeySaved:
+        state.hasOpenAIAPIKey = true
+        state.openAIAPIKeyDraft = ""
+        state.$transcriptionReadinessState.withLock {
+          $0.isAPIKeyConfigured = true
+          $0.lastError = nil
+        }
+        return .none
+
+      case .clearOpenAIAPIKey:
+        state.hasOpenAIAPIKey = false
+        state.openAIAPIKeyDraft = ""
+        state.$transcriptionReadinessState.withLock {
+          $0.isAPIKeyConfigured = false
+          $0.lastError = "OpenAI API key is not configured"
+        }
+        return .run { [apiKey] _ in
+          try? apiKey.setOpenAIKey(nil)
+        }
+
+      case .cloudModel:
         return .none
       
       // Microphone device selection

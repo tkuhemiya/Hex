@@ -22,4 +22,3 @@ struct StarRatingView: View {
 		.enableInjection()
 	}
 }
-

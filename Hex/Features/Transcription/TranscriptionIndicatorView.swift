@@ -141,7 +141,7 @@ struct TranscriptionIndicatorView: View {
       // Show tooltip when prewarming
       if status == .prewarming {
         VStack(spacing: 4) {
-          Text("Model prewarming...")
+          Text("Sending audio...")
             .font(.system(size: 12, weight: .medium))
             .foregroundColor(.white)
             .padding(.horizontal, 8)

@@ -234,7 +234,7 @@ struct RecordingRaceTests {
     TranscriptionFeature.State(
       hexSettings: Shared(.init()),
       isRemappingScratchpadFocused: Shared(false),
-      modelBootstrapState: Shared(.init(isModelReady: true)),
+      transcriptionReadinessState: Shared(.init(isAPIKeyConfigured: true)),
       transcriptionHistory: Shared(.init())
     )
   }

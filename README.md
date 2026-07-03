@@ -37,7 +37,7 @@ open build/Build/Products/Release/Hex.app
 2. Cloud model is selected by default
 3. Grant Microphone, Accessibility, and Input Monitoring when prompted
 
-Local Parakeet/Whisper models are still in the picker if you want them.
+Transcription uses OpenAI cloud only — an API key is required for every recording.
 
 ## Troubleshooting
 

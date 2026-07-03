@@ -11,7 +11,7 @@ final class HexSettingsMigrationTests: XCTestCase {
 		XCTAssertEqual(decoded.soundEffectsVolume, HexSettings.baseSoundEffectsVolume)
 		XCTAssertEqual(decoded.openOnLogin, true)
 		XCTAssertEqual(decoded.showDockIcon, false)
-		XCTAssertEqual(decoded.selectedModel, "whisper-large-v3")
+		XCTAssertEqual(decoded.selectedModel, CloudTranscriptionModel.gpt4oMiniTranscribe.identifier)
 		XCTAssertEqual(decoded.useClipboardPaste, false)
 		XCTAssertEqual(decoded.preventSystemSleep, true)
 		XCTAssertEqual(decoded.minimumKeyTime, 0.25)
@@ -23,7 +23,6 @@ final class HexSettingsMigrationTests: XCTestCase {
 		XCTAssertEqual(decoded.selectedMicrophoneID, "builtin:mic")
 		XCTAssertEqual(decoded.saveTranscriptionHistory, false)
 		XCTAssertEqual(decoded.maxHistoryEntries, 10)
-		XCTAssertEqual(decoded.hasCompletedModelBootstrap, true)
 		XCTAssertEqual(decoded.hasCompletedStorageMigration, true)
 	}
 

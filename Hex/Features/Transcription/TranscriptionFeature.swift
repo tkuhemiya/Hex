@@ -11,7 +11,6 @@ import Foundation
 import HexCore
 import Inject
 import SwiftUI
-import WhisperKit
 
 private let transcriptionFeatureLogger = HexLog.transcription
 
@@ -29,7 +28,7 @@ struct TranscriptionFeature {
     var sourceAppName: String?
     @Shared(.hexSettings) var hexSettings: HexSettings
     @Shared(.isRemappingScratchpadFocused) var isRemappingScratchpadFocused: Bool = false
-    @Shared(.modelBootstrapState) var modelBootstrapState: ModelBootstrapState
+    @Shared(.transcriptionReadinessState) var transcriptionReadinessState: TranscriptionReadinessState
     @Shared(.transcriptionHistory) var transcriptionHistory: TranscriptionHistory
   }
 
@@ -282,7 +281,7 @@ private extension TranscriptionFeature {
 
 private extension TranscriptionFeature {
   func handleStartRecording(_ state: inout State) -> Effect<Action> {
-    guard state.modelBootstrapState.isModelReady else {
+    guard state.transcriptionReadinessState.isAPIKeyConfigured else {
       return .merge(
         .send(.modelMissing),
         .run { _ in soundEffect.play(.cancel) }
@@ -380,13 +379,9 @@ private extension TranscriptionFeature {
 
           // Create transcription options with the selected language
           // Note: cap concurrency to avoid audio I/O overloads on some Macs
-          let decodeOptions = DecodingOptions(
-            language: language,
-            detectLanguage: language == nil, // Only auto-detect if no language specified
-            chunkingStrategy: .vad,
-          )
+          let options = TranscriptionOptions(language: language)
 
-          let result = try await transcription.transcribe(capturedURL, model, decodeOptions) { _ in }
+          let result = try await transcription.transcribe(capturedURL, model, options) { _ in }
 
           transcriptionFeatureLogger.notice("Transcribed audio from \(capturedURL.lastPathComponent) to text length \(result.count)")
           audioURL = nil
