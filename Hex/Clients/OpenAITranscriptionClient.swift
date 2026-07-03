@@ -29,7 +29,8 @@ struct OpenAITranscriptionClient: Sendable {
   private static let endpoint = URL(string: "https://api.openai.com/v1/audio/transcriptions")!
 
   func transcribe(
-    url: URL,
+    audioData: Data,
+    filename: String,
     model: String,
     language: String?,
     apiKey: String?
@@ -38,7 +39,6 @@ struct OpenAITranscriptionClient: Sendable {
       throw OpenAITranscriptionError.missingAPIKey
     }
 
-    let audioData = try Data(contentsOf: url)
     let boundary = "HexBoundary-\(UUID().uuidString)"
     var body = Data()
     appendField(to: &body, boundary: boundary, name: "model", value: model)
@@ -49,8 +49,8 @@ struct OpenAITranscriptionClient: Sendable {
       to: &body,
       boundary: boundary,
       name: "file",
-      filename: url.lastPathComponent,
-      mimeType: mimeType(for: url),
+      filename: filename,
+      mimeType: "audio/wav",
       data: audioData
     )
     body.append("--\(boundary)--\r\n".data(using: .utf8)!)
@@ -61,7 +61,7 @@ struct OpenAITranscriptionClient: Sendable {
     request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
     request.httpBody = body
 
-    logger.notice("Sending cloud transcription request model=\(model) file=\(url.lastPathComponent)")
+    logger.notice("Sending cloud transcription request model=\(model) bytes=\(audioData.count)")
     let (data, response) = try await URLSession.shared.data(for: request)
     guard let http = response as? HTTPURLResponse else {
       throw OpenAITranscriptionError.invalidResponse
@@ -77,15 +77,6 @@ struct OpenAITranscriptionClient: Sendable {
     }
     let decoded = try JSONDecoder().decode(TranscriptionResponse.self, from: data)
     return decoded.text.trimmingCharacters(in: .whitespacesAndNewlines)
-  }
-
-  private func mimeType(for url: URL) -> String {
-    switch url.pathExtension.lowercased() {
-    case "mp3": "audio/mpeg"
-    case "mp4", "m4a": "audio/mp4"
-    case "webm": "audio/webm"
-    default: "audio/wav"
-    }
   }
 
   private func appendField(to body: inout Data, boundary: String, name: String, value: String) {

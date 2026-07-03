@@ -28,7 +28,7 @@ struct AudioInputDevice: Identifiable, Equatable {
 @DependencyClient
 struct RecordingClient {
   var startRecording: @Sendable () async -> Void = {}
-  var stopRecording: @Sendable () async -> URL = { URL(fileURLWithPath: "") }
+  var stopRecording: @Sendable () async -> CapturedAudio = { .empty }
   var requestMicrophoneAccess: @Sendable () async -> Bool = { false }
   var observeAudioLevel: @Sendable () async -> AsyncStream<Meter> = { AsyncStream { _ in } }
   var getAvailableInputDevices: @Sendable () async -> [AudioInputDevice] = { [] }
@@ -328,27 +328,14 @@ actor RecordingClientLive {
     let backend: RecordingBackend
   }
 
-  private var recorder: AVAudioRecorder?
-  private let recordingURL = FileManager.default.temporaryDirectory.appendingPathComponent("recording.wav")
-  private var isRecorderPrimedForNextSession = false
-  private var lastPrimedDeviceID: AudioDeviceID?
   private var recordingSessionID: UUID?
   private var activeRecordingSession: ActiveRecordingSession?
   private var lastRecordingEndedAt: Date?
   private var deferredCaptureRestartReason: String?
   private var environmentChangeDebounceTask: Task<Void, Never>?
   private var mediaControlTask: Task<Void, Never>?
-  private let recorderSettings: [String: Any] = [
-    AVFormatIDKey: Int(kAudioFormatLinearPCM),
-    AVSampleRateKey: 16000.0,
-    AVNumberOfChannelsKey: 1,
-    AVLinearPCMBitDepthKey: 32,
-    AVLinearPCMIsFloatKey: true,
-    AVLinearPCMIsBigEndianKey: false,
-    AVLinearPCMIsNonInterleaved: false,
-  ]
   private let (meterStream, meterContinuation) = AsyncStream<Meter>.makeStream()
-  private var meterTask: Task<Void, Never>?
+  private lazy var fallbackRecorder = InMemoryFallbackRecorder(meterContinuation: meterContinuation)
   private lazy var captureController = SuperFastCaptureController(
     meterContinuation: meterContinuation,
     onEngineConfigurationChange: { [weak self] in
@@ -540,24 +527,23 @@ actor RecordingClientLive {
   private func handleCaptureEnvironmentChange(reason: String) async {
     let currentInputDevice = getDefaultInputDevice()
     let currentOutputDevice = getDefaultOutputDevice()
-    let isRecorderRecording = recorder?.isRecording == true
+    let isFallbackRecording = fallbackRecorder.isActive
     let isEngineRecording = captureController.isRecording
-    let isRecordingActive = isRecorderRecording || isEngineRecording
+    let isRecordingActive = isFallbackRecording || isEngineRecording
 
     recordingLogger.notice(
-      "Capture environment changed reason=\(reason) activeRecording=\(isRecordingActive) input=\(self.describeDevice(currentInputDevice)) output=\(self.describeDevice(currentOutputDevice)) captureEngineArmed=\(self.captureController.isRunning) primed=\(self.isRecorderPrimedForNextSession)"
+      "Capture environment changed reason=\(reason) activeRecording=\(isRecordingActive) input=\(self.describeDevice(currentInputDevice)) output=\(self.describeDevice(currentOutputDevice)) captureEngineArmed=\(self.captureController.isRunning)"
     )
 
     if isRecordingActive {
       deferredCaptureRestartReason = reason
-      invalidatePrimedState()
       recordingLogger.notice("Deferring capture restart until current recording stops reason=\(reason)")
       return
     }
 
     deferredCaptureRestartReason = nil
     if hexSettings.superFastModeEnabled {
-      releaseRecorder(reason: "environment-change-\(reason)")
+      stopFallbackRecorder(reason: "environment-change-\(reason)")
       captureControllerNeedsRestartReason = reason
       captureController.clearWarmBuffer()
       recordingLogger.notice("Deferring capture engine rebuild until next recording reason=\(reason)")
@@ -566,7 +552,7 @@ actor RecordingClientLive {
 
     _ = applyPreferredInputDevice()
     stopCaptureController(reason: reason)
-    releaseRecorder(reason: "environment-change-\(reason)")
+    stopFallbackRecorder(reason: "environment-change-\(reason)")
     recordingLogger.debug("Standard mode uses on-demand capture startup after reason=\(reason)")
   }
 
@@ -801,7 +787,7 @@ actor RecordingClientLive {
     let idleDuration = lastRecordingEndedAt.map { Date().timeIntervalSince($0) }
     let outputDeviceID = getDefaultOutputDevice()
     recordingLogger.notice(
-      "Recording requested mode=\(mode.rawValue) idle=\(self.formatDuration(idleDuration)) input=\(self.describeDevice(inputDeviceID)) output=\(self.describeDevice(outputDeviceID)) fallbackPrimed=\(self.isRecorderPrimedForNextSession)"
+      "Recording requested mode=\(mode.rawValue) idle=\(self.formatDuration(idleDuration)) input=\(self.describeDevice(inputDeviceID)) output=\(self.describeDevice(outputDeviceID))"
     )
   }
 
@@ -814,16 +800,10 @@ actor RecordingClientLive {
     let targetDeviceID = resolvePreferredInputDevice()
     let currentDefaultDevice = getDefaultInputDevice()
 
-    if let primedDevice = lastPrimedDeviceID, primedDevice != currentDefaultDevice {
-      recordingLogger.notice("Default input changed from \(primedDevice) to \(currentDefaultDevice ?? 0); invalidating primed state")
-      invalidatePrimedState()
-    }
-
     if let targetDeviceID {
       if targetDeviceID != currentDefaultDevice {
         recordingLogger.notice("Switching input device from \(currentDefaultDevice ?? 0) to \(targetDeviceID)")
         setInputDevice(deviceID: targetDeviceID)
-        invalidatePrimedState()
       } else {
         recordingLogger.debug("Device \(targetDeviceID) already set as default, skipping setInputDevice()")
       }
@@ -834,12 +814,8 @@ actor RecordingClientLive {
     return getDefaultInputDevice()
   }
 
-  private func makeCaptureRecordingURL() -> URL {
-    FileManager.default.temporaryDirectory.appendingPathComponent("hex-capture-\(UUID().uuidString).wav")
-  }
-
-  private func makeIgnoredStopURL() -> URL {
-    FileManager.default.temporaryDirectory.appendingPathComponent("hex-ignored-stop-\(UUID().uuidString).wav")
+  private func makeCapturedAudio(samples: [Float], duration: TimeInterval) -> CapturedAudio {
+    CapturedAudio(wavData: WAVEncoder.encode(samples: samples), duration: duration)
   }
 
   nonisolated static func shouldIgnoreStopRequest(
@@ -887,18 +863,11 @@ actor RecordingClientLive {
     captureControllerDeviceID = nil
   }
 
-  private func releaseRecorder(reason: String) {
-    if recorder != nil {
-      recordingLogger.notice(
-        "Releasing recorder reason=\(reason) primed=\(self.isRecorderPrimedForNextSession) input=\(self.describeDevice(self.lastPrimedDeviceID))"
-      )
+  private func stopFallbackRecorder(reason: String) {
+    if fallbackRecorder.isActive {
+      recordingLogger.notice("Stopping fallback recorder reason=\(reason)")
+      _ = fallbackRecorder.stop()
     }
-    stopMeterTask()
-    if recorder?.isRecording == true {
-      recorder?.stop()
-    }
-    recorder = nil
-    invalidatePrimedState()
   }
 
   // MARK: - Input Device Mute Detection & Fix
@@ -1097,8 +1066,7 @@ actor RecordingClientLive {
 
     do {
       try ensureCaptureControllerReadyAfterDeferredRestart(for: activeInputDevice, reason: "startRecording")
-      let recordingURL = makeCaptureRecordingURL()
-      try captureController.beginRecording(to: recordingURL, requestedAt: startRequestAt, mode: mode)
+      try captureController.beginRecording(requestedAt: startRequestAt, mode: mode)
       let startedAt = Date()
       activeRecordingSession = ActiveRecordingSession(
         startedAt: startedAt,
@@ -1110,27 +1078,20 @@ actor RecordingClientLive {
       )
       return
     } catch {
-      recordingLogger.error("Failed to start capture engine for mode=\(mode.rawValue): \(error.localizedDescription); falling back to AVAudioRecorder")
+      recordingLogger.error("Failed to start capture engine for mode=\(mode.rawValue): \(error.localizedDescription); falling back to in-memory recorder")
       stopCaptureController(reason: "capture-engine-start-failed")
     }
 
     do {
-      let recorder = try ensureRecorderReadyForRecording()
-      let recordCallStartedAt = Date()
-      guard recorder.record() else {
-        recordingLogger.error("AVAudioRecorder refused to start recording")
-        endRecordingSession()
-        return
-      }
+      try fallbackRecorder.start()
       let startedAt = Date()
       activeRecordingSession = ActiveRecordingSession(
         startedAt: startedAt,
         mode: mode,
         backend: .recorderFallback
       )
-      startMeterTask()
       recordingLogger.notice(
-        "Recording started mode=\(mode.rawValue) backend=\(RecordingBackend.recorderFallback.rawValue) recordCall=\(self.formatDuration(Date().timeIntervalSince(recordCallStartedAt))) totalStart=\(self.formatDuration(startedAt.timeIntervalSince(startRequestAt)))"
+        "Recording started mode=\(mode.rawValue) backend=\(RecordingBackend.recorderFallback.rawValue) totalStart=\(self.formatDuration(startedAt.timeIntervalSince(startRequestAt)))"
       )
     } catch {
       recordingLogger.error("Failed to start recording: \(error.localizedDescription)")
@@ -1139,7 +1100,7 @@ actor RecordingClientLive {
     }
   }
 
-  func stopRecording() async -> URL {
+  func stopRecording() async -> CapturedAudio {
     let stopSessionID = recordingSessionID
     let activeSession = activeRecordingSession
 
@@ -1155,11 +1116,11 @@ actor RecordingClientLive {
         currentSessionID: recordingSessionID
       ) {
         recordingLogger.notice("Ignoring stale stop request after a newer recording session started")
-        return makeIgnoredStopURL()
+        return .empty
       }
     }
 
-    if let captureURL = captureController.finishRecording(clearBuffer: currentCaptureMode() == .superFast) {
+    if let samples = captureController.finishRecording(clearBuffer: currentCaptureMode() == .superFast) {
       let stoppedAt = Date()
       let session = activeSession ?? ActiveRecordingSession(
         startedAt: stoppedAt,
@@ -1167,22 +1128,21 @@ actor RecordingClientLive {
         backend: .captureEngine
       )
       let recordingDuration = stoppedAt.timeIntervalSince(session.startedAt)
-      stopMeterTask()
       endRecordingSession()
       clearActiveRecordingMetadata()
       lastRecordingEndedAt = stoppedAt
       recordingLogger.notice(
-        "Recording stopped mode=\(session.mode.rawValue) backend=\(session.backend.rawValue) duration=\(self.formatDuration(recordingDuration))"
+        "Recording stopped mode=\(session.mode.rawValue) backend=\(session.backend.rawValue) duration=\(self.formatDuration(recordingDuration)) samples=\(samples.count)"
       )
 
       if !hexSettings.superFastModeEnabled {
         stopCaptureController(reason: "mode-disabled-after-stop")
-        releaseRecorder(reason: "capture-engine-stop")
+        stopFallbackRecorder(reason: "capture-engine-stop")
       }
 
       await flushDeferredCaptureRestartIfNeeded()
       await resumeMediaIfNeeded()
-      return captureURL
+      return makeCapturedAudio(samples: samples, duration: recordingDuration)
     }
 
     let stoppedAt = Date()
@@ -1192,32 +1152,24 @@ actor RecordingClientLive {
       backend: .recorderFallback
     )
     let recordingDuration = stoppedAt.timeIntervalSince(session.startedAt)
-    let wasRecording = recorder?.isRecording == true
+    let wasRecording = fallbackRecorder.isActive
     guard session.backend == .recorderFallback, wasRecording else {
-      recordingLogger.notice("stopRecording() called without an active recorder fallback; skipping stale recording.wav export")
-      stopMeterTask()
+      recordingLogger.notice("stopRecording() called without an active fallback recorder; skipping stale export")
       endRecordingSession()
       clearActiveRecordingMetadata()
       lastRecordingEndedAt = stoppedAt
       await flushDeferredCaptureRestartIfNeeded()
       await resumeMediaIfNeeded()
-      return makeIgnoredStopURL()
+      return .empty
     }
-    recorder?.stop()
-    stopMeterTask()
+
+    let samples = fallbackRecorder.stop()
     endRecordingSession()
     clearActiveRecordingMetadata()
     lastRecordingEndedAt = stoppedAt
-    recordingLogger.notice("Recording stopped mode=\(session.mode.rawValue) backend=\(session.backend.rawValue) duration=\(self.formatDuration(recordingDuration))")
-
-    var exportedURL = recordingURL
-    do {
-      exportedURL = try duplicateCurrentRecording()
-    } catch {
-      isRecorderPrimedForNextSession = false
-      recordingLogger.error("Failed to copy recording: \(error.localizedDescription)")
-    }
-    releaseRecorder(reason: "fallback-stop")
+    recordingLogger.notice(
+      "Recording stopped mode=\(session.mode.rawValue) backend=\(session.backend.rawValue) duration=\(self.formatDuration(recordingDuration)) samples=\(samples.count)"
+    )
 
     if !hexSettings.superFastModeEnabled {
       stopCaptureController(reason: "standard-stop")
@@ -1226,7 +1178,7 @@ actor RecordingClientLive {
     await flushDeferredCaptureRestartIfNeeded()
     await resumeMediaIfNeeded()
 
-    return exportedURL
+    return makeCapturedAudio(samples: samples, duration: recordingDuration)
   }
 
   private func resumeMediaIfNeeded() async {
@@ -1280,11 +1232,6 @@ actor RecordingClientLive {
     activeRecordingSession = nil
   }
 
-  private func invalidatePrimedState() {
-    isRecorderPrimedForNextSession = false
-    lastPrimedDeviceID = nil
-  }
-
   private func updatePausedPlayers(_ players: [String], sessionID: UUID) {
     guard recordingSessionID == sessionID else { return }
     pausedPlayers = players
@@ -1334,102 +1281,19 @@ actor RecordingClientLive {
     return true
   }
 
-  private enum RecorderPreparationError: Error {
-    case failedToPrepareRecorder
-    case missingRecordingOnDisk
-  }
-
-  private func ensureRecorderReadyForRecording() throws -> AVAudioRecorder {
-    let recorder = try recorderOrCreate()
-
-    if !isRecorderPrimedForNextSession {
-      recordingLogger.notice("Recorder NOT primed, calling prepareToRecord() now")
-      guard recorder.prepareToRecord() else {
-        throw RecorderPreparationError.failedToPrepareRecorder
-      }
-    } else {
-      recordingLogger.notice("Recorder already primed, skipping prepareToRecord()")
-    }
-
-    isRecorderPrimedForNextSession = false
-    return recorder
-  }
-
-  private func recorderOrCreate() throws -> AVAudioRecorder {
-    if let recorder {
-      return recorder
-    }
-
-    let recorder = try AVAudioRecorder(url: recordingURL, settings: recorderSettings)
-    recorder.isMeteringEnabled = true
-    self.recorder = recorder
-    return recorder
-  }
-
-  private func duplicateCurrentRecording() throws -> URL {
-    let fm = FileManager.default
-
-    guard fm.fileExists(atPath: recordingURL.path) else {
-      throw RecorderPreparationError.missingRecordingOnDisk
-    }
-
-    let exportURL = recordingURL
-      .deletingLastPathComponent()
-      .appendingPathComponent("hex-recording-\(UUID().uuidString).wav")
-
-    if fm.fileExists(atPath: exportURL.path) {
-      try fm.removeItem(at: exportURL)
-    }
-
-    try fm.copyItem(at: recordingURL, to: exportURL)
-    return exportURL
-  }
-
-  private func primeRecorderForNextSession() throws {
-    let recorder = try recorderOrCreate()
-    guard recorder.prepareToRecord() else {
-      isRecorderPrimedForNextSession = false
-      lastPrimedDeviceID = nil
-      throw RecorderPreparationError.failedToPrepareRecorder
-    }
-
-    isRecorderPrimedForNextSession = true
-    lastPrimedDeviceID = getDefaultInputDevice()
-    recordingLogger.debug("Recorder primed for device \(self.lastPrimedDeviceID ?? 0)")
-  }
-
-  func startMeterTask() {
-    meterTask = Task {
-      while !Task.isCancelled, let r = self.recorder, r.isRecording {
-        r.updateMeters()
-        let averagePower = r.averagePower(forChannel: 0)
-        let averageNormalized = pow(10, averagePower / 20.0)
-        let peakPower = r.peakPower(forChannel: 0)
-        let peakNormalized = pow(10, peakPower / 20.0)
-        meterContinuation.yield(Meter(averagePower: Double(averageNormalized), peakPower: Double(peakNormalized)))
-        try? await Task.sleep(for: .milliseconds(100))
-      }
-    }
-  }
-
-  func stopMeterTask() {
-    meterTask?.cancel()
-    meterTask = nil
-  }
-
   func observeAudioLevel() -> AsyncStream<Meter> {
     meterStream
   }
 
   func warmUpRecorder() async {
-    guard activeRecordingSession == nil, recorder?.isRecording != true, !captureController.isRecording else {
+    guard activeRecordingSession == nil, !fallbackRecorder.isActive, !captureController.isRecording else {
       recordingLogger.notice("Skipping recorder warm-up while recording is active")
       return
     }
     let activeInputDevice = applyPreferredInputDevice()
 
     if hexSettings.superFastModeEnabled {
-      releaseRecorder(reason: "warm-up-super-fast")
+      stopFallbackRecorder(reason: "warm-up-super-fast")
       do {
         try ensureCaptureControllerReadyAfterDeferredRestart(for: activeInputDevice, reason: "warmUpRecorder")
       } catch {
@@ -1439,8 +1303,8 @@ actor RecordingClientLive {
     }
 
     stopCaptureController(reason: "warm-up-standard")
-    releaseRecorder(reason: "warm-up-standard")
-    recordingLogger.debug("Standard mode uses on-demand capture engine startup; skipping idle recorder priming")
+    stopFallbackRecorder(reason: "warm-up-standard")
+    recordingLogger.debug("Standard mode uses on-demand capture engine startup; skipping idle warm-up")
   }
 
   /// Release recorder resources. Call on app termination.
@@ -1449,7 +1313,7 @@ actor RecordingClientLive {
     await resumeMediaIfNeeded()
     stopObservingSystemChanges()
     stopCaptureController(reason: "cleanup")
-    releaseRecorder(reason: "cleanup")
+    stopFallbackRecorder(reason: "cleanup")
     recordingLogger.notice("RecordingClient cleaned up")
   }
 }

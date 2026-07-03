@@ -13,7 +13,7 @@ private let transcriptionLogger = HexLog.transcription
 /// Transcribes audio via the OpenAI cloud API.
 @DependencyClient
 struct TranscriptionClient {
-	var transcribe: @Sendable (URL, String, TranscriptionOptions, @escaping (Progress) -> Void) async throws -> String
+	var transcribe: @Sendable (Data, String, TranscriptionOptions, @escaping (Progress) -> Void) async throws -> String
 	var isReady: @Sendable () async -> Bool = { false }
 }
 
@@ -21,7 +21,7 @@ extension TranscriptionClient: DependencyKey {
 	static var liveValue: Self {
 		let live = TranscriptionClientLive()
 		return Self(
-			transcribe: { try await live.transcribe(url: $0, model: $1, options: $2, progressCallback: $3) },
+			transcribe: { try await live.transcribe(audioData: $0, model: $1, options: $2, progressCallback: $3) },
 			isReady: { await live.isReady() }
 		)
 	}
@@ -48,7 +48,7 @@ struct TranscriptionClientLive: Sendable {
 	}
 
 	func transcribe(
-		url: URL,
+		audioData: Data,
 		model: String,
 		options: TranscriptionOptions,
 		progressCallback: @escaping (Progress) -> Void
@@ -62,12 +62,13 @@ struct TranscriptionClientLive: Sendable {
 		progressCallback(progress)
 
 		let startAll = Date()
-		transcriptionLogger.notice("Transcribing with cloud model=\(model) file=\(url.lastPathComponent)")
+		transcriptionLogger.notice("Transcribing with cloud model=\(model) bytes=\(audioData.count)")
 
 		let apiKey = APIKeyClient.liveValue.getOpenAIKey()
 		let startTx = Date()
 		let text = try await OpenAITranscriptionClient().transcribe(
-			url: url,
+			audioData: audioData,
+			filename: "recording.wav",
 			model: model,
 			language: options.language,
 			apiKey: apiKey

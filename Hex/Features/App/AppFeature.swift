@@ -16,7 +16,6 @@ struct AppFeature {
   enum ActiveTab: Equatable {
     case settings
     case remappings
-    case history
     case about
   }
 
@@ -24,7 +23,6 @@ struct AppFeature {
 	struct State {
 		var transcription: TranscriptionFeature.State = .init()
 		var settings: SettingsFeature.State = .init()
-		var history: HistoryFeature.State = .init()
 		var activeTab: ActiveTab = .settings
 		@Shared(.hexSettings) var hexSettings: HexSettings
 		@Shared(.transcriptionReadinessState) var transcriptionReadinessState: TranscriptionReadinessState
@@ -39,10 +37,8 @@ struct AppFeature {
     case binding(BindingAction<State>)
     case transcription(TranscriptionFeature.Action)
     case settings(SettingsFeature.Action)
-    case history(HistoryFeature.Action)
     case setActiveTab(ActiveTab)
     case task
-    case pasteLastTranscript
 
     // Permission actions
     case checkPermissions
@@ -51,8 +47,6 @@ struct AppFeature {
     case modelStatusEvaluated(Bool)
   }
 
-  @Dependency(\.keyEventMonitor) var keyEventMonitor
-  @Dependency(\.pasteboard) var pasteboard
   @Dependency(\.permissions) var permissions
   @Dependency(\.apiKey) var apiKey
 
@@ -67,10 +61,6 @@ struct AppFeature {
       SettingsFeature()
     }
 
-    Scope(state: \.history, action: \.history) {
-      HistoryFeature()
-    }
-
     Reduce { state, action in
       switch action {
       case .binding:
@@ -78,19 +68,9 @@ struct AppFeature {
         
       case .task:
         return .merge(
-          startPasteLastTranscriptMonitoring(),
           ensureSelectedModelReadiness(),
           startPermissionMonitoring()
         )
-        
-      case .pasteLastTranscript:
-        @Shared(.transcriptionHistory) var transcriptionHistory: TranscriptionHistory
-        guard let lastTranscript = transcriptionHistory.history.first?.text else {
-          return .none
-        }
-        return .run { _ in
-          await pasteboard.paste(lastTranscript)
-        }
         
       case .transcription(.modelMissing):
         HexLog.app.notice("API key missing - activating app and switching to settings")
@@ -117,7 +97,6 @@ struct AppFeature {
       case .settings(.requestAccessibility):
         return .run { send in
           await permissions.requestAccessibility()
-          // Poll for status change (macOS doesn't provide callback)
           for _ in 0..<10 {
             try? await Task.sleep(for: .seconds(1))
             await send(.checkPermissions)
@@ -136,16 +115,10 @@ struct AppFeature {
       case .settings:
         return .none
 
-      case .history(.navigateToSettings):
-        state.activeTab = .settings
-        return .none
-      case .history:
-        return .none
 		case let .setActiveTab(tab):
 			state.activeTab = tab
 			return .none
 
-      // Permission handling
       case .checkPermissions:
         return .run { send in
           async let mic = permissions.microphoneStatus()
@@ -161,49 +134,10 @@ struct AppFeature {
         return .none
 
       case .appActivated:
-        // App became active - re-check permissions
         return .send(.checkPermissions)
 
       case .modelStatusEvaluated:
         return .none
-      }
-    }
-  }
-  
-  private func startPasteLastTranscriptMonitoring() -> Effect<Action> {
-    .run { send in
-      @Shared(.isSettingPasteLastTranscriptHotkey) var isSettingPasteLastTranscriptHotkey: Bool
-      @Shared(.hexSettings) var hexSettings: HexSettings
-
-      let token = keyEventMonitor.handleKeyEvent { keyEvent in
-        // Skip if user is setting a hotkey
-        if isSettingPasteLastTranscriptHotkey {
-          return false
-        }
-
-        // Check if this matches the paste last transcript hotkey
-        guard let pasteHotkey = hexSettings.pasteLastTranscriptHotkey,
-              let key = keyEvent.key,
-              key == pasteHotkey.key,
-              keyEvent.modifiers.matchesExactly(pasteHotkey.modifiers) else {
-          return false
-        }
-
-        // Trigger paste action - use MainActor to avoid escaping send
-        MainActor.assumeIsolated {
-          send(.pasteLastTranscript)
-        }
-        return true // Intercept the key event
-      }
-
-      defer { token.cancel() }
-
-      await withTaskCancellationHandler {
-        while !Task.isCancelled {
-          try? await Task.sleep(for: .seconds(60))
-        }
-      } onCancel: {
-        token.cancel()
       }
     }
   }
@@ -232,10 +166,8 @@ struct AppFeature {
 
   private func startPermissionMonitoring() -> Effect<Action> {
     .run { send in
-      // Initial check on app launch
       await send(.checkPermissions)
 
-      // Monitor app activation events
       for await activation in permissions.observeAppActivation() {
         if case .didBecomeActive = activation {
           await send(.appActivated)
@@ -271,14 +203,6 @@ struct AppView: View {
         .tag(AppFeature.ActiveTab.remappings)
 
         Button {
-          store.send(.setActiveTab(.history))
-        } label: {
-          Label("History", systemImage: "clock")
-        }
-        .buttonStyle(.plain)
-        .tag(AppFeature.ActiveTab.history)
-
-        Button {
           store.send(.setActiveTab(.about))
         } label: {
           Label("About", systemImage: "info.circle")
@@ -299,9 +223,6 @@ struct AppView: View {
       case .remappings:
         WordRemappingsView(store: store.scope(state: \.settings, action: \.settings))
           .navigationTitle("Transforms")
-      case .history:
-        HistoryView(store: store.scope(state: \.history, action: \.history))
-          .navigationTitle("History")
       case .about:
         AboutView()
           .navigationTitle("About")

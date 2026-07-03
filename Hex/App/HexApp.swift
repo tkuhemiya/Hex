@@ -13,8 +13,6 @@ struct HexApp: App {
 
 	var body: some Scene {
 		MenuBarExtra {
-			MenuBarCopyLastTranscriptButton()
-
 			Button("Settings…") {
 				appDelegate.presentSettingsView()
 			}.keyboardShortcut(",")

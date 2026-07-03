@@ -1,6 +1,7 @@
 import AppKit
 import ComposableArchitecture
 import Foundation
+import HexCore
 import Testing
 
 @testable import Hex
@@ -12,16 +13,9 @@ struct RecordingRaceTests {
   func newRecordingCancelsPendingDiscardCleanup() async throws {
     let now = Date(timeIntervalSince1970: 1_234)
     let activeApp = NSWorkspace.shared.frontmostApplication
-    let stopURL = FileManager.default.temporaryDirectory
-      .appendingPathComponent("discard-cleanup-\(UUID().uuidString).wav")
-    let created = FileManager.default.createFile(
-      atPath: stopURL.path,
-      contents: Data("test".utf8)
-    )
-    #expect(created)
-    defer { try? FileManager.default.removeItem(at: stopURL) }
+    let capturedAudio = CapturedAudio(wavData: Data("test".utf8), duration: 0.5)
+    let probe = RecordingProbe(capturedAudio: capturedAudio)
 
-    let probe = RecordingProbe(stopURL: stopURL)
     let store = TestStore(initialState: Self.makeState()) {
       TranscriptionFeature()
     } withDependencies: {
@@ -40,8 +34,6 @@ struct RecordingRaceTests {
     await store.send(.startRecording) {
       $0.isRecording = true
       $0.recordingStartTime = now
-      $0.sourceAppBundleID = activeApp?.bundleIdentifier
-      $0.sourceAppName = activeApp?.localizedName
     }
     await store.send(.discard) {
       $0.isRecording = false
@@ -53,8 +45,6 @@ struct RecordingRaceTests {
     await store.send(.startRecording) {
       $0.isRecording = true
       $0.recordingStartTime = now
-      $0.sourceAppBundleID = activeApp?.bundleIdentifier
-      $0.sourceAppName = activeApp?.localizedName
     }
 
     await probe.resumePendingStop()
@@ -63,7 +53,6 @@ struct RecordingRaceTests {
     let counts = await probe.counts()
     #expect(counts.startCalls == 2)
     #expect(counts.stopCalls == 1)
-    #expect(FileManager.default.fileExists(atPath: stopURL.path))
   }
 
   @Test
@@ -93,22 +82,14 @@ struct RecordingRaceTests {
   @Test
   func shortRecordingReleasesSleepAssertion() async throws {
     let now = Date(timeIntervalSince1970: 1_234)
-    let stopURL = FileManager.default.temporaryDirectory
-      .appendingPathComponent("short-recording-\(UUID().uuidString).wav")
-    let created = FileManager.default.createFile(
-      atPath: stopURL.path,
-      contents: Data("test".utf8)
-    )
-    #expect(created)
-    defer { try? FileManager.default.removeItem(at: stopURL) }
-
+    let capturedAudio = CapturedAudio(wavData: Data("test".utf8), duration: 0.5)
     let probe = SleepProbe()
     let store = TestStore(initialState: Self.makeState()) {
       TranscriptionFeature()
     } withDependencies: {
       $0.date.now = now
       $0.recording.startRecording = {}
-      $0.recording.stopRecording = { stopURL }
+      $0.recording.stopRecording = { capturedAudio }
       $0.sleepManagement.preventSleep = { _ in
         await probe.recordPreventSleep()
       }
@@ -121,8 +102,6 @@ struct RecordingRaceTests {
     await store.send(.startRecording) {
       $0.isRecording = true
       $0.recordingStartTime = now
-      $0.sourceAppBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-      $0.sourceAppName = NSWorkspace.shared.frontmostApplication?.localizedName
     }
     await store.send(.stopRecording) {
       $0.isRecording = false
@@ -132,16 +111,14 @@ struct RecordingRaceTests {
     let counts = await probe.counts()
     #expect(counts.preventSleepCalls == 1)
     #expect(counts.allowSleepCalls == 1)
-    #expect(!FileManager.default.fileExists(atPath: stopURL.path))
   }
 
   @Test
   func discardCancelsPendingRecordingStart() async {
     let now = Date(timeIntervalSince1970: 1_234)
-    let stopURL = FileManager.default.temporaryDirectory
-      .appendingPathComponent("pending-start-discard-\(UUID().uuidString).wav")
+    let capturedAudio = CapturedAudio(wavData: Data("test".utf8), duration: 0.5)
     let sleepProbe = PendingSleepProbe()
-    let recordingProbe = RecordingProbe(stopURL: stopURL)
+    let recordingProbe = RecordingProbe(capturedAudio: capturedAudio)
     let store = TestStore(initialState: Self.makeState()) {
       TranscriptionFeature()
     } withDependencies: {
@@ -162,8 +139,6 @@ struct RecordingRaceTests {
     await store.send(.startRecording) {
       $0.isRecording = true
       $0.recordingStartTime = now
-      $0.sourceAppBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-      $0.sourceAppName = NSWorkspace.shared.frontmostApplication?.localizedName
     }
     await sleepProbe.waitUntilPending()
     await store.send(.discard) {
@@ -179,91 +154,48 @@ struct RecordingRaceTests {
   }
 
   @Test
-  func emptyTranscriptionDeletesCapturedAudio() async throws {
-    let audioURL = FileManager.default.temporaryDirectory
-      .appendingPathComponent("empty-transcription-\(UUID().uuidString).wav")
-    let created = FileManager.default.createFile(
-      atPath: audioURL.path,
-      contents: Data("test".utf8)
-    )
-    #expect(created)
-    defer { try? FileManager.default.removeItem(at: audioURL) }
-
+  func emptyTranscriptionDoesNothing() async throws {
     let store = TestStore(initialState: Self.makeState()) {
       TranscriptionFeature()
     }
 
-    await store.send(.transcriptionResult("", audioURL, 1.25))
+    await store.send(.transcriptionResult("", 1.25))
     await store.finish()
-
-    #expect(!FileManager.default.fileExists(atPath: audioURL.path))
-  }
-
-  @Test
-  func historyUsesRecordingDurationCapturedAtStop() async {
-    let duration = 1.25
-    let audioURL = FileManager.default.temporaryDirectory
-      .appendingPathComponent("history-duration-\(UUID().uuidString).wav")
-    let probe = TranscriptPersistenceProbe()
-    let store = TestStore(initialState: Self.makeState()) {
-      TranscriptionFeature()
-    } withDependencies: {
-      $0.transcriptPersistence.save = { text, audioURL, duration, sourceAppBundleID, sourceAppName in
-        await probe.record(duration: duration)
-        return Transcript(
-          timestamp: Date(timeIntervalSince1970: 1_234),
-          text: text,
-          audioPath: audioURL,
-          duration: duration,
-          sourceAppBundleID: sourceAppBundleID,
-          sourceAppName: sourceAppName
-        )
-      }
-      $0.pasteboard.paste = { _ in }
-      $0.soundEffects.play = { _ in }
-    }
-
-    await store.send(.transcriptionResult("hello", audioURL, duration))
-    await store.finish()
-
-    let storedDuration = await probe.duration
-    #expect(storedDuration == duration)
   }
 
   private static func makeState() -> TranscriptionFeature.State {
     TranscriptionFeature.State(
       hexSettings: Shared(.init()),
       isRemappingScratchpadFocused: Shared(false),
-      transcriptionReadinessState: Shared(.init(isAPIKeyConfigured: true)),
-      transcriptionHistory: Shared(.init())
+      transcriptionReadinessState: Shared(.init(isAPIKeyConfigured: true))
     )
   }
 }
 
 private actor RecordingProbe {
-  private let stopURL: URL
+  private let capturedAudio: CapturedAudio
   private var startCalls = 0
   private var stopCalls = 0
-  private var stopContinuation: CheckedContinuation<URL, Never>?
+  private var stopContinuation: CheckedContinuation<CapturedAudio, Never>?
 
-  init(stopURL: URL) {
-    self.stopURL = stopURL
+  init(capturedAudio: CapturedAudio) {
+    self.capturedAudio = capturedAudio
   }
 
   func recordStart() {
     startCalls += 1
   }
 
-  func beginStop() async -> URL {
+  func beginStop() async -> CapturedAudio {
     stopCalls += 1
     return await withCheckedContinuation { continuation in
       stopContinuation = continuation
     }
   }
 
-  func beginImmediateStop() -> URL {
+  func beginImmediateStop() -> CapturedAudio {
     stopCalls += 1
-    return stopURL
+    return capturedAudio
   }
 
   func waitForPendingStop() async {
@@ -273,7 +205,7 @@ private actor RecordingProbe {
   }
 
   func resumePendingStop() {
-    stopContinuation?.resume(returning: stopURL)
+    stopContinuation?.resume(returning: capturedAudio)
     stopContinuation = nil
   }
 
@@ -317,13 +249,5 @@ private actor PendingSleepProbe {
   func resume() {
     continuation?.resume()
     continuation = nil
-  }
-}
-
-private actor TranscriptPersistenceProbe {
-  private(set) var duration: TimeInterval?
-
-  func record(duration: TimeInterval) {
-    self.duration = duration
   }
 }

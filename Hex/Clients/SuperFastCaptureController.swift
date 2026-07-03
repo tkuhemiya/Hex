@@ -53,7 +53,7 @@ private final class FloatRingBuffer {
 }
 
 private struct SuperFastCaptureConstants {
-  static let sampleRate: Double = 16_000
+  static let sampleRate: Double = WAVEncoder.defaultSampleRate
   static let ringBufferDuration: TimeInterval = 1.0
   static let defaultPreRollDuration: TimeInterval = 0.45
   static let tapBufferSize: AVAudioFrameCount = 2_048
@@ -90,8 +90,7 @@ final class SuperFastCaptureController {
   }
 
   private struct ActiveRecording {
-    let url: URL
-    let file: AVAudioFile
+    let samples: GrowableFloatPCMBuffer
     let requestedAt: Date
     let prependedDuration: TimeInterval
     var didLogFirstBuffer: Bool
@@ -251,41 +250,26 @@ final class SuperFastCaptureController {
     onEngineConfigurationChange()
   }
 
-  func beginRecording(to url: URL, requestedAt: Date = Date(), mode: CaptureRecordingMode) throws {
+  func beginRecording(requestedAt: Date = Date(), mode: CaptureRecordingMode) throws {
     try startIfNeeded(reason: "begin-recording", keepWarmBuffer: mode.keepsWarmBuffer)
 
     var startError: Error?
     processingQueue.sync {
       do {
-        let file = try AVAudioFile(
-          forWriting: url,
-          settings: [
-            AVFormatIDKey: Int(kAudioFormatLinearPCM),
-            AVSampleRateKey: SuperFastCaptureConstants.sampleRate,
-            AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepthKey: 32,
-            AVLinearPCMIsFloatKey: true,
-            AVLinearPCMIsBigEndianKey: false,
-            AVLinearPCMIsNonInterleaved: true,
-          ],
-          commonFormat: .pcmFormatFloat32,
-          interleaved: false
-        )
-
+        let sampleBuffer = GrowableFloatPCMBuffer()
         let preRollDuration = mode.preRollDuration
         let preRollFrameCount = Int(preRollDuration * SuperFastCaptureConstants.sampleRate)
         let preRollSamples = ringBuffer.recentSamples(count: preRollFrameCount)
         let prependedDuration = Double(preRollSamples.count) / SuperFastCaptureConstants.sampleRate
         if !preRollSamples.isEmpty {
-          try write(samples: preRollSamples, to: file)
+          sampleBuffer.append(preRollSamples)
         }
 
         logger.notice(
-          "Capture engine recording file opened prepended=\(String(format: "%.3f", prependedDuration))s requestedPreRoll=\(String(format: "%.3f", preRollDuration))s"
+          "Capture engine recording started prepended=\(String(format: "%.3f", prependedDuration))s requestedPreRoll=\(String(format: "%.3f", preRollDuration))s"
         )
         activeRecording = ActiveRecording(
-          url: url,
-          file: file,
+          samples: sampleBuffer,
           requestedAt: requestedAt,
           prependedDuration: prependedDuration,
           didLogFirstBuffer: false
@@ -300,14 +284,15 @@ final class SuperFastCaptureController {
     }
   }
 
-  func finishRecording(clearBuffer: Bool = true) -> URL? {
+  func finishRecording(clearBuffer: Bool = true) -> [Float]? {
     processingQueue.sync {
-      let url = activeRecording?.url
+      guard let recording = activeRecording else { return nil }
+      let samples = recording.samples.drain()
       activeRecording = nil
       if clearBuffer {
         ringBuffer.clear()
       }
-      return url
+      return samples
     }
   }
 
@@ -359,12 +344,7 @@ final class SuperFastCaptureController {
       activeRecording = recording
     }
 
-    do {
-      try recording.file.write(from: converted)
-    } catch {
-      logger.error("Failed to write capture engine audio: \(error.localizedDescription)")
-      activeRecording = nil
-    }
+    recording.samples.append(UnsafeBufferPointer(start: samples, count: sampleCount))
   }
 
   private func convert(_ inputBuffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
@@ -405,22 +385,6 @@ final class SuperFastCaptureController {
     @unknown default:
       return nil
     }
-  }
-
-  private func write(samples: [Float], to file: AVAudioFile) throws {
-    guard !samples.isEmpty,
-          let buffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: AVAudioFrameCount(samples.count)),
-          let channelData = buffer.floatChannelData?[0]
-    else {
-      return
-    }
-
-    buffer.frameLength = AVAudioFrameCount(samples.count)
-    samples.withUnsafeBufferPointer { sampleBuffer in
-      guard let baseAddress = sampleBuffer.baseAddress else { return }
-      channelData.update(from: baseAddress, count: sampleBuffer.count)
-    }
-    try file.write(from: buffer)
   }
 
   private func meter(for samples: UnsafePointer<Float>, count: Int) -> Meter {
