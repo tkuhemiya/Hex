@@ -1,31 +1,32 @@
-# Hex (local fork)
+# Hex (personal fork)
 
-Personal fork with **OpenAI cloud transcription** (`gpt-4o-mini-transcribe-2025-12-15`). Not upstream Hex — build and install on this machine only.
+Personal fork of [kitlangton/Hex](https://github.com/kitlangton/Hex). Not for upstream — use at your own risk.
+
+## What's different
+
+- **OpenAI cloud transcription** — Replaces local Whisper/Parakeet models. Requires an OpenAI API key (`gpt-4o-mini-transcribe`).
+- **Realtime streaming** — Streams audio to OpenAI's realtime API for live transcription.
+- **Single-press hotkey toggle** — Press to start, press again to stop (Esc cancels).
+- **No history** — Removed history persistence; in-memory only.
+- **No auto-updates** — Removed Sparkle; updates are manual.
 
 ## Requirements
 
 - macOS 14+, Apple Silicon
-- Xcode installed (for `xcodebuild` only — no need to open the app)
-
-```bash
-sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-sudo xcodebuild -license accept
-```
+- Xcode 15+ (`xcode-select` path must point to it)
 
 ## Build & install
 
 ```bash
-./scripts/build.sh          # Release
-./scripts/install.sh
+./scripts/build.sh               # Release build
+./scripts/install.sh              # Copies to /Applications
 
-# Debug (separate bundle ID, won't clash with official Hex):
+# Debug (separate bundle ID, won't clash):
 ./scripts/build.sh Debug
 ./scripts/install.sh Debug
 ```
 
 Output: `build/Build/Products/Release/Hex.app`
-
-Launch:
 
 ```bash
 open build/Build/Products/Release/Hex.app
@@ -33,17 +34,19 @@ open build/Build/Products/Release/Hex.app
 
 ## Setup
 
-1. Settings → Transcription Model → paste **OpenAI API key**
-2. Cloud model is selected by default
-3. Grant Microphone, Accessibility, and Input Monitoring when prompted
+1. Open Hex → Settings → **Transcription Model** → paste your OpenAI API key.
+2. Grant Microphone, Accessibility, and Input Monitoring when prompted.
+3. Set your hotkey in Settings → Hotkey.
 
-Transcription uses OpenAI cloud only — an API key is required for every recording.
+An API key is required — every transcription goes through OpenAI's cloud.
 
 ## Troubleshooting
 
-**`Macro must be enabled before it can be used`** — use `./scripts/build.sh` (includes `-skipMacroValidation`).
+**`Macro must be enabled before it can be used`** — always use `./scripts/build.sh` (it passes `-skipMacroValidation`).
 
-**Signing errors** — `export DEVELOPMENT_TEAM=YOUR_TEAM_ID` then rebuild, or use the default ad-hoc signing in the script.
+**Signing errors** — set `DEVELOPMENT_TEAM` env var, or the script defaults to ad-hoc signing (fine for local use).
+
+**Stale cache** — `./scripts/build.sh clean Release`
 
 ## Tests
 
