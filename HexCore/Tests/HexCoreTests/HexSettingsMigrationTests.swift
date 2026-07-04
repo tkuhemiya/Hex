@@ -15,6 +15,7 @@ final class HexSettingsMigrationTests: XCTestCase {
 		XCTAssertEqual(decoded.useClipboardPaste, false)
 		XCTAssertEqual(decoded.preventSystemSleep, true)
 		XCTAssertTrue(decoded.superFastModeEnabled)
+		XCTAssertEqual(decoded.transcriptionDeliveryMode, .file)
 		XCTAssertEqual(decoded.outputLanguage, "en")
 		XCTAssertEqual(decoded.selectedMicrophoneID, "builtin:mic")
 		XCTAssertEqual(decoded.hasCompletedStorageMigration, true)
@@ -29,6 +30,18 @@ final class HexSettingsMigrationTests: XCTestCase {
 
 	func testNewSettingsEnableSuperFastModeByDefault() {
 		XCTAssertTrue(HexSettings().superFastModeEnabled)
+	}
+
+	func testNewSettingsDefaultToFileTranscriptionDelivery() {
+		XCTAssertEqual(HexSettings().transcriptionDeliveryMode, .file)
+	}
+
+	func testTranscriptionDeliveryModeRoundTrip() throws {
+		var settings = HexSettings()
+		settings.transcriptionDeliveryMode = .realtime
+		let data = try JSONEncoder().encode(settings)
+		let decoded = try JSONDecoder().decode(HexSettings.self, from: data)
+		XCTAssertEqual(decoded.transcriptionDeliveryMode, .realtime)
 	}
 
 	func testLegacyHotkeySettingsDecodeWithoutAffectingCurrentSettings() throws {

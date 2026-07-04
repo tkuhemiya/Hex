@@ -44,6 +44,7 @@ struct TranscriptionFeature {
     // Transcription result flow
     case transcriptionResult(String, TimeInterval)
     case transcriptionError(Error)
+    case recordingSessionStartFailed(Error)
 
     // Model availability
     case modelMissing
@@ -101,6 +102,9 @@ struct TranscriptionFeature {
 
       case let .transcriptionError(error):
         return handleTranscriptionError(&state, error: error)
+
+      case let .recordingSessionStartFailed(error):
+        return handleRecordingSessionStartFailed(&state, error: error)
 
       case .modelMissing:
         return .none
@@ -237,12 +241,12 @@ private extension TranscriptionFeature {
 
     let model = state.hexSettings.selectedModel
     let language = state.hexSettings.outputLanguage
-    let useRealtimeTranscription = RealtimeTranscriptionSettings.isEnabled
+    let useRealtimeTranscription = state.hexSettings.transcriptionDeliveryMode == .realtime
 
     // Prevent system sleep during recording
     return .merge(
       .cancel(id: CancelID.recordingCleanup),
-      .run { [sleepManagement, preventSleep = state.hexSettings.preventSystemSleep] _ in
+      .run { [sleepManagement, preventSleep = state.hexSettings.preventSystemSleep] send in
         // Play sound immediately for instant feedback
         soundEffect.play(.startRecording)
 
@@ -262,7 +266,7 @@ private extension TranscriptionFeature {
             try await transcription.beginRealtimeSession(model, options)
             await recording.setRealtimeSampleHandler { samples in
               Task {
-                try? await transcription.appendRealtimeAudio(samples)
+                await transcription.appendRealtimeAudio(samples)
               }
             }
           } catch {
@@ -270,10 +274,38 @@ private extension TranscriptionFeature {
               "Failed to start realtime transcription session: \(error.localizedDescription)"
             )
             await transcription.cancelRealtimeSession()
+            if preventSleep {
+              await sleepManagement.allowSleep()
+            }
+            await send(.recordingSessionStartFailed(error))
+            return
           }
-        }
 
-        await recording.startRecording()
+          await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+              await recording.startRecording()
+            }
+            group.addTask {
+              do {
+                try await transcription.waitForRealtimeSessionReady()
+              } catch {
+                guard !Task.isCancelled else { return }
+                transcriptionFeatureLogger.error(
+                  "Realtime transcription session failed during recording: \(error.localizedDescription)"
+                )
+                await recording.clearRealtimeSampleHandler()
+                await transcription.cancelRealtimeSession()
+                _ = await recording.stopRecording()
+                if preventSleep {
+                  await sleepManagement.allowSleep()
+                }
+                await send(.recordingSessionStartFailed(error))
+              }
+            }
+          }
+        } else {
+          await recording.startRecording()
+        }
       }
       .cancellable(id: CancelID.recordingStart, cancelInFlight: true)
     )
@@ -304,7 +336,7 @@ private extension TranscriptionFeature {
     state.error = nil
     let model = state.hexSettings.selectedModel
     let language = state.hexSettings.outputLanguage
-    let useRealtimeTranscription = RealtimeTranscriptionSettings.isEnabled
+    let useRealtimeTranscription = state.hexSettings.transcriptionDeliveryMode == .realtime
 
     state.isPrewarming = true
 
@@ -343,8 +375,15 @@ private extension TranscriptionFeature {
         } catch {
           await transcription.cancelRealtimeSession()
           await recording.clearRealtimeSampleHandler()
-          transcriptionFeatureLogger.error("Transcription failed: \(error.localizedDescription)")
-          await send(.transcriptionError(error))
+          if Self.shouldTreatRealtimeStopErrorAsEmptyTranscript(error) {
+            transcriptionFeatureLogger.notice(
+              "Realtime pipeline ended without audio; treating as empty transcript"
+            )
+            await send(.transcriptionResult("", duration))
+          } else {
+            transcriptionFeatureLogger.error("Transcription failed: \(error.localizedDescription)")
+            await send(.transcriptionError(error))
+          }
         }
       }
       .cancellable(id: CancelID.transcription)
@@ -420,6 +459,33 @@ private extension TranscriptionFeature {
     state.isPrewarming = false
     state.error = error.localizedDescription
     return .none
+  }
+
+  func handleRecordingSessionStartFailed(
+    _ state: inout State,
+    error: Error
+  ) -> Effect<Action> {
+    state.isRecording = false
+    state.recordingStartTime = nil
+    state.isTranscribing = false
+    state.isPrewarming = false
+    state.error = error.localizedDescription
+    return .merge(
+      .cancel(id: CancelID.recordingStart),
+      .run { _ in
+        soundEffect.play(.cancel)
+      }
+    )
+  }
+
+  static func shouldTreatRealtimeStopErrorAsEmptyTranscript(_ error: Error) -> Bool {
+    guard let error = error as? RealtimeTranscriptionError else { return false }
+    switch error {
+    case .notConnected, .emptyAudioBuffer:
+      return true
+    case .missingAPIKey, .sessionNotReady, .commitTimedOut, .serverError, .connectionClosed, .invalidEvent:
+      return false
+    }
   }
 }
 

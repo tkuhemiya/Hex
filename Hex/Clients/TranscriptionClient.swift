@@ -16,7 +16,8 @@ struct TranscriptionClient {
 	var transcribe: @Sendable (Data, String, TranscriptionOptions, @escaping (Progress) -> Void) async throws -> String
 	var isReady: @Sendable () async -> Bool = { false }
 	var beginRealtimeSession: @Sendable (String, TranscriptionOptions) async throws -> Void = { _, _ in }
-	var appendRealtimeAudio: @Sendable ([Float]) async throws -> Void = { _ in }
+	var waitForRealtimeSessionReady: @Sendable () async throws -> Void = {}
+	var appendRealtimeAudio: @Sendable ([Float]) async -> Void = { _ in }
 	var finishRealtimeSession: @Sendable () async throws -> String = { "" }
 	var cancelRealtimeSession: @Sendable () async -> Void = {}
 }
@@ -28,7 +29,8 @@ extension TranscriptionClient: DependencyKey {
 			transcribe: { try await live.transcribe(audioData: $0, model: $1, options: $2, progressCallback: $3) },
 			isReady: { await live.isReady() },
 			beginRealtimeSession: { try await live.beginRealtimeSession(model: $0, options: $1) },
-			appendRealtimeAudio: { try await live.appendRealtimeAudio(samples: $0) },
+			waitForRealtimeSessionReady: { try await live.waitForRealtimeSessionReady() },
+			appendRealtimeAudio: { await live.appendRealtimeAudio(samples: $0) },
 			finishRealtimeSession: { try await live.finishRealtimeSession() },
 			cancelRealtimeSession: { await live.cancelRealtimeSession() }
 		)
@@ -38,6 +40,7 @@ extension TranscriptionClient: DependencyKey {
 		transcribe: { _, _, _, _ in "" },
 		isReady: { true },
 		beginRealtimeSession: { _, _ in },
+		waitForRealtimeSessionReady: {},
 		appendRealtimeAudio: { _ in },
 		finishRealtimeSession: { "" },
 		cancelRealtimeSession: {}
@@ -103,11 +106,15 @@ struct TranscriptionClientLive: Sendable {
 
 		let apiKey = APIKeyClient.liveValue.getOpenAIKey()
 		transcriptionLogger.notice("Starting realtime transcription session model=\(model)")
-		try await realtimeCoordinator.start(model: model, language: options.language, apiKey: apiKey)
+		try await realtimeCoordinator.activate(model: model, language: options.language, apiKey: apiKey)
 	}
 
-	func appendRealtimeAudio(samples: [Float]) async throws {
-		try await realtimeCoordinator.append(samples: samples)
+	func waitForRealtimeSessionReady() async throws {
+		try await realtimeCoordinator.waitUntilReady()
+	}
+
+	func appendRealtimeAudio(samples: [Float]) async {
+		await realtimeCoordinator.append(samples: samples)
 	}
 
 	func finishRealtimeSession() async throws -> String {

@@ -3,7 +3,6 @@
 //  Hex
 //
 //  Push-to-talk Realtime transcription: stream PCM while recording, commit once on stop.
-//  Set `RealtimeTranscriptionSettings.isEnabled = true` to try this path.
 //
 
 import Foundation
@@ -11,12 +10,7 @@ import HexCore
 
 private let logger = HexLog.transcription
 
-/// Flip to route recordings through the Realtime API instead of `/v1/audio/transcriptions`.
-enum RealtimeTranscriptionSettings {
-  static let isEnabled = false
-}
-
-enum RealtimeTranscriptionError: LocalizedError {
+enum RealtimeTranscriptionError: LocalizedError, Equatable {
   case missingAPIKey
   case notConnected
   case sessionNotReady
@@ -49,39 +43,186 @@ enum RealtimeTranscriptionError: LocalizedError {
 }
 
 /// Coordinates a single in-flight Realtime session (Hex records one utterance at a time).
+///
+/// Mic capture can begin before the WebSocket handshake completes. Samples are buffered locally
+/// until the session is ready, then flushed in order.
 actor RealtimeTranscriptionCoordinator {
-  private var session: RealtimeTranscriptionSession?
-
-  func start(model: String, language: String?, apiKey: String?) async throws {
-    if let session {
-      await session.cancel()
-      self.session = nil
-    }
-
-    let nextSession = try await RealtimeTranscriptionSession.connect(
-      model: model,
-      language: language,
-      apiKey: apiKey
-    )
-    session = nextSession
+  private struct ActivePipeline {
+    let generation: UInt64
+    var session: RealtimeTranscriptionSession?
+    var connectTask: Task<Void, Never>?
+    var pendingSamples = RealtimeSampleBuffer()
+    var hasAudio = false
+    var connectError: Error?
   }
 
-  func append(samples: [Float]) async throws {
-    guard let session else { throw RealtimeTranscriptionError.notConnected }
-    try await session.append(samples: samples)
+  private var pipeline: ActivePipeline?
+  private var generation: UInt64 = 0
+
+  /// Begins connecting in the background and returns immediately so capture can start in parallel.
+  func activate(model: String, language: String?, apiKey: String?) async throws {
+    guard let apiKey, !apiKey.isEmpty else {
+      throw RealtimeTranscriptionError.missingAPIKey
+    }
+
+    await deactivate()
+
+    generation += 1
+    let activeGeneration = generation
+    logger.notice("Activating realtime transcription pipeline model=\(model)")
+
+    let connectTask = Task { [activeGeneration] in
+      do {
+        let session = try await RealtimeTranscriptionSession.connect(
+          model: model,
+          language: language,
+          apiKey: apiKey
+        )
+        await self.handleConnectSuccess(generation: activeGeneration, session: session)
+      } catch is CancellationError {
+        logger.debug("Realtime connect cancelled generation=\(activeGeneration)")
+      } catch {
+        await self.handleConnectFailure(generation: activeGeneration, error: error)
+      }
+    }
+
+    pipeline = ActivePipeline(
+      generation: activeGeneration,
+      session: nil,
+      connectTask: connectTask,
+      pendingSamples: RealtimeSampleBuffer(),
+      hasAudio: false,
+      connectError: nil
+    )
+  }
+
+  func append(samples: [Float]) async {
+    guard !samples.isEmpty else { return }
+    guard var active = pipeline else { return }
+
+    active.hasAudio = true
+
+    if let session = active.session {
+      try? await session.append(samples: samples)
+    } else {
+      active.pendingSamples.enqueue(samples)
+    }
+
+    pipeline = active
+  }
+
+  func waitUntilReady() async throws {
+    try await awaitPipelineReady()
   }
 
   func finish() async throws -> String {
-    guard let session else { throw RealtimeTranscriptionError.notConnected }
-    defer { self.session = nil }
+    guard pipeline != nil else {
+      throw RealtimeTranscriptionError.notConnected
+    }
+
+    try await awaitPipelineReady()
+
+    guard var active = pipeline else {
+      throw RealtimeTranscriptionError.notConnected
+    }
+
+    if let connectError = active.connectError {
+      pipeline = nil
+      throw connectError
+    }
+
+    guard active.hasAudio else {
+      pipeline = nil
+      throw RealtimeTranscriptionError.emptyAudioBuffer
+    }
+
+    guard let session = active.session else {
+      pipeline = nil
+      throw RealtimeTranscriptionError.notConnected
+    }
+
+    pipeline = nil
     return try await session.commit()
   }
 
   func cancel() async {
-    if let session {
+    await deactivate()
+  }
+
+  // MARK: - Pipeline lifecycle
+
+  private func awaitPipelineReady() async throws {
+    guard var active = pipeline else {
+      throw RealtimeTranscriptionError.notConnected
+    }
+
+    if active.session != nil {
+      return
+    }
+
+    if let connectError = active.connectError {
+      throw connectError
+    }
+
+    if let connectTask = active.connectTask {
+      await connectTask.value
+      active = pipeline ?? active
+    }
+
+    if let connectError = active.connectError {
+      throw connectError
+    }
+
+    guard active.session != nil else {
+      throw RealtimeTranscriptionError.sessionNotReady
+    }
+  }
+
+  private func handleConnectSuccess(
+    generation: UInt64,
+    session: RealtimeTranscriptionSession
+  ) async {
+    guard var active = pipeline, active.generation == generation else {
+      await session.cancel()
+      return
+    }
+
+    active.session = session
+    active.connectTask = nil
+
+    let pendingChunks = active.pendingSamples.takePending()
+    pipeline = active
+
+    for chunk in pendingChunks {
+      try? await session.append(samples: chunk)
+    }
+
+    logger.notice(
+      "Realtime transcription session ready flushedBufferedChunks=\(pendingChunks.count)"
+    )
+  }
+
+  private func handleConnectFailure(generation: UInt64, error: Error) async {
+    guard var active = pipeline, active.generation == generation else { return }
+
+    active.connectError = error
+    active.connectTask = nil
+    pipeline = active
+
+    logger.error(
+      "Realtime transcription connect failed: \(error.localizedDescription, privacy: .public)"
+    )
+  }
+
+  private func deactivate() async {
+    guard let active = pipeline else { return }
+
+    pipeline = nil
+    active.connectTask?.cancel()
+
+    if let session = active.session {
       await session.cancel()
     }
-    session = nil
   }
 }
 
@@ -89,6 +230,7 @@ actor RealtimeTranscriptionCoordinator {
 
 private actor RealtimeTranscriptionSession {
   private let webSocket: URLSessionWebSocketTask
+  private let transcriptionModel: String
   private var receiveTask: Task<Void, Never>?
   private var isSessionReady = false
   private var hasAppendedAudio = false
@@ -104,32 +246,32 @@ private actor RealtimeTranscriptionSession {
       throw RealtimeTranscriptionError.missingAPIKey
     }
 
-    var request = URLRequest(url: Self.endpoint)
+    var request = URLRequest(url: RealtimeTranscriptionConfiguration.webSocketURL)
     request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-    request.setValue("realtime=v1", forHTTPHeaderField: "OpenAI-Beta")
 
     let webSocket = URLSession.shared.webSocketTask(with: request)
     webSocket.resume()
 
-    let session = RealtimeTranscriptionSession(webSocket: webSocket)
-    try await session.bootstrap(model: model, language: language)
-
-    logger.notice("Realtime transcription session ready model=\(model)")
-    return session
+    let session = RealtimeTranscriptionSession(webSocket: webSocket, transcriptionModel: model)
+    do {
+      try await session.bootstrap(language: language)
+      return session
+    } catch {
+      await session.cancel()
+      throw error
+    }
   }
 
-  private func bootstrap(model: String, language: String?) async throws {
+  private func bootstrap(language: String?) async throws {
+    try Task.checkCancellation()
     receiveTask = Task { await receiveLoop() }
-    try await sendSessionConfiguration(model: model, language: language)
+    try await sendSessionConfiguration(language: language)
     try await waitUntilReady()
   }
 
-  private static let endpoint = URL(
-    string: "wss://api.openai.com/v1/realtime?intent=transcription"
-  )!
-
-  private init(webSocket: URLSessionWebSocketTask) {
+  private init(webSocket: URLSessionWebSocketTask, transcriptionModel: String) {
     self.webSocket = webSocket
+    self.transcriptionModel = transcriptionModel
   }
 
   func append(samples: [Float]) async throws {
@@ -177,27 +319,18 @@ private actor RealtimeTranscriptionSession {
 
   // MARK: - Configuration
 
-  private func sendSessionConfiguration(model: String, language: String?) async throws {
-    var transcription: [String: Any] = ["model": model]
-    if let language, !language.isEmpty {
-      transcription["language"] = language
-    }
-
-    // Manual push-to-talk: omit `turn_detection` so only our commit ends the turn.
-    let payload: [String: Any] = [
-      "type": "transcription_session.update",
-      "session": [
-        "input_audio_format": "pcm16",
-        "input_audio_transcription": transcription,
-      ],
-    ]
-
+  private func sendSessionConfiguration(language: String?) async throws {
+    let payload = RealtimeTranscriptionConfiguration.sessionUpdatePayload(
+      transcriptionModel: transcriptionModel,
+      language: language
+    )
     try await sendJSON(payload)
   }
 
   private func waitUntilReady() async throws {
     let deadline = Date().addingTimeInterval(10)
     while !isSessionReady {
+      try Task.checkCancellation()
       if let serverError {
         throw RealtimeTranscriptionError.serverError(serverError)
       }
@@ -235,7 +368,9 @@ private actor RealtimeTranscriptionSession {
           pendingCommit?.resume(throwing: RealtimeTranscriptionError.connectionClosed)
           pendingCommit = nil
         }
-        logger.error("Realtime websocket receive failed: \(error.localizedDescription)")
+        if !Task.isCancelled {
+          logger.error("Realtime websocket receive failed: \(error.localizedDescription)")
+        }
         break
       }
     }
@@ -251,10 +386,7 @@ private actor RealtimeTranscriptionSession {
     }
 
     switch type {
-    case "transcription_session.created",
-         "transcription_session.updated",
-         "session.created",
-         "session.updated":
+    case "session.created", "session.updated":
       isSessionReady = true
 
     case "conversation.item.input_audio_transcription.completed":

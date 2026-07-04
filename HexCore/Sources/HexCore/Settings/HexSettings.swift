@@ -26,6 +26,7 @@ public struct HexSettings: Codable, Equatable, Sendable {
 	public var preventSystemSleep: Bool
 	public var recordingAudioBehavior: RecordingAudioBehavior
 	public var superFastModeEnabled: Bool
+	public var transcriptionDeliveryMode: TranscriptionDeliveryMode
 	public var outputLanguage: String?
 	public var selectedMicrophoneID: String?
 	public var hasCompletedStorageMigration: Bool
@@ -44,6 +45,7 @@ public struct HexSettings: Codable, Equatable, Sendable {
 		preventSystemSleep: Bool = true,
 		recordingAudioBehavior: RecordingAudioBehavior = .doNothing,
 		superFastModeEnabled: Bool = true,
+		transcriptionDeliveryMode: TranscriptionDeliveryMode = .file,
 		outputLanguage: String? = nil,
 		selectedMicrophoneID: String? = nil,
 		hasCompletedStorageMigration: Bool = false,
@@ -61,6 +63,7 @@ public struct HexSettings: Codable, Equatable, Sendable {
 		self.preventSystemSleep = preventSystemSleep
 		self.recordingAudioBehavior = recordingAudioBehavior
 		self.superFastModeEnabled = superFastModeEnabled
+		self.transcriptionDeliveryMode = transcriptionDeliveryMode
 		self.outputLanguage = outputLanguage
 		self.selectedMicrophoneID = selectedMicrophoneID
 		self.hasCompletedStorageMigration = hasCompletedStorageMigration
@@ -107,6 +110,7 @@ private enum HexSettingKey: String, CodingKey, CaseIterable {
 	case pauseMediaOnRecord // Legacy
 	case minimumKeyTime // Legacy
 	case superFastModeEnabled
+	case transcriptionDeliveryMode
 	case useDoubleTapOnly // Legacy
 	case doubleTapLockEnabled // Legacy
 	case outputLanguage
@@ -198,6 +202,11 @@ private enum HexSettingsSchema {
 			}
 		).eraseToAny(),
 		SettingsField(.superFastModeEnabled, keyPath: \.superFastModeEnabled, default: defaults.superFastModeEnabled).eraseToAny(),
+		SettingsField(
+			.transcriptionDeliveryMode,
+			keyPath: \.transcriptionDeliveryMode,
+			default: defaults.transcriptionDeliveryMode
+		).eraseToAny(),
 		HexSettingsSchema.legacyField(.minimumKeyTime, as: Double.self),
 		HexSettingsSchema.legacyField(.useDoubleTapOnly, as: Bool.self),
 		HexSettingsSchema.legacyField(.doubleTapLockEnabled, as: Bool.self),

@@ -65,6 +65,7 @@ struct SettingsFeature {
     case togglePreventSystemSleep(Bool)
     case setRecordingAudioBehavior(RecordingAudioBehavior)
     case toggleSuperFastMode(Bool)
+    case setTranscriptionDeliveryMode(TranscriptionDeliveryMode)
     case setUseClipboardPaste(Bool)
     case setOutputLanguage(String?)
     case setSelectedMicrophoneID(String?)
@@ -375,6 +376,10 @@ struct SettingsFeature {
         return .run { _ in
           await recording.warmUpRecorder()
         }
+
+      case let .setTranscriptionDeliveryMode(mode):
+        state.$hexSettings.withLock { $0.transcriptionDeliveryMode = mode }
+        return .none
 
       case let .setOutputLanguage(language):
         state.$hexSettings.withLock { $0.outputLanguage = language }

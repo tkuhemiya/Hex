@@ -53,6 +53,30 @@ struct ModelSectionView: View {
 				store: store.scope(state: \.cloudModel, action: \.cloudModel),
 				shouldFlash: shouldFlash
 			)
+
+			VStack(alignment: .leading, spacing: 8) {
+				HStack {
+					Text("Delivery")
+						.font(.headline)
+					Spacer()
+					Picker(
+						"Delivery",
+						selection: Binding(
+							get: { store.hexSettings.transcriptionDeliveryMode },
+							set: { store.send(.setTranscriptionDeliveryMode($0)) }
+						)
+					) {
+						ForEach(TranscriptionDeliveryMode.allCases, id: \.self) { mode in
+							Text(mode.title).tag(mode)
+						}
+					}
+					.labelsHidden()
+					.pickerStyle(.menu)
+				}
+				Text(store.hexSettings.transcriptionDeliveryMode.detail)
+					.settingsCaption()
+			}
+			.padding(.vertical, 4)
 		} header: {
 			Text("Transcription Model")
 		}
