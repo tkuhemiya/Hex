@@ -48,11 +48,7 @@ The app uses **The Composable Architecture (TCA)** for state management. Key arc
 
 ## Important Implementation Details
 
-1. **Hotkey Recording Modes**: The app supports both press-and-hold and double-tap recording modes, implemented in `HotKeyProcessor.swift`. See `docs/hotkey-semantics.md` for detailed behavior specifications including:
-   - **Modifier-only hotkeys** (e.g., Option) use a **0.3s threshold** to prevent accidental triggers from OS shortcuts
-   - **Regular hotkeys** (e.g., Cmd+A) use user's `minimumKeyTime` setting (default 0.2s)
-   - Mouse clicks and extra modifiers are discarded within threshold, ignored after
-   - Only ESC cancels recordings after the threshold
+1. **Hotkey Recording**: Single-press toggle — press hotkey to start, press again to stop. See `docs/hotkey-semantics.md` for behavior details. Esc cancels an active recording.
 
 2. **Model Management**: Models are managed by `ModelDownloadFeature`. Curated defaults live in `Hex/Resources/Data/models.json`. The Settings UI shows a compact opinionated list (Parakeet + three Whisper sizes). No dropdowns.
 

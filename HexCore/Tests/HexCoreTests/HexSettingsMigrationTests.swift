@@ -14,10 +14,7 @@ final class HexSettingsMigrationTests: XCTestCase {
 		XCTAssertEqual(decoded.selectedModel, CloudTranscriptionModel.gpt4oMiniTranscribe.identifier)
 		XCTAssertEqual(decoded.useClipboardPaste, false)
 		XCTAssertEqual(decoded.preventSystemSleep, true)
-		XCTAssertEqual(decoded.minimumKeyTime, 0.25)
 		XCTAssertTrue(decoded.superFastModeEnabled)
-		XCTAssertEqual(decoded.useDoubleTapOnly, true)
-		XCTAssertEqual(decoded.doubleTapLockEnabled, true)
 		XCTAssertEqual(decoded.outputLanguage, "en")
 		XCTAssertEqual(decoded.selectedMicrophoneID, "builtin:mic")
 		XCTAssertEqual(decoded.hasCompletedStorageMigration, true)
@@ -34,34 +31,25 @@ final class HexSettingsMigrationTests: XCTestCase {
 		XCTAssertTrue(HexSettings().superFastModeEnabled)
 	}
 
-	func testInitNormalizesDoubleTapOnlyWhenLockDisabled() {
-		let settings = HexSettings(useDoubleTapOnly: true, doubleTapLockEnabled: false)
-
-		XCTAssertFalse(settings.useDoubleTapOnly)
-		XCTAssertFalse(settings.doubleTapLockEnabled)
-	}
-
-	func testDecodeNormalizesDoubleTapOnlyWhenLockDisabled() throws {
-		let payload = "{\"useDoubleTapOnly\":true,\"doubleTapLockEnabled\":false}"
+	func testLegacyHotkeySettingsDecodeWithoutAffectingCurrentSettings() throws {
+		let payload = "{\"minimumKeyTime\":0.5,\"useDoubleTapOnly\":true,\"doubleTapLockEnabled\":false}"
 		guard let data = payload.data(using: .utf8) else {
 			XCTFail("Failed to encode JSON payload")
 			return
 		}
 
 		let decoded = try JSONDecoder().decode(HexSettings.self, from: data)
-
-		XCTAssertFalse(decoded.useDoubleTapOnly)
-		XCTAssertFalse(decoded.doubleTapLockEnabled)
+		let defaults = HexSettings()
+		XCTAssertEqual(decoded, defaults)
 	}
 
-	func testEncodeDecodeRoundTripPreservesNormalizedDoubleTapValues() throws {
-		let settings = HexSettings(useDoubleTapOnly: true, doubleTapLockEnabled: false)
+	func testEncodeOmitsLegacyHotkeySettings() throws {
+		let settings = HexSettings()
 		let data = try JSONEncoder().encode(settings)
-		let decoded = try JSONDecoder().decode(HexSettings.self, from: data)
-
-		XCTAssertFalse(settings.useDoubleTapOnly)
-		XCTAssertFalse(decoded.useDoubleTapOnly)
-		XCTAssertEqual(decoded, settings)
+		let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+		XCTAssertNil(json?["minimumKeyTime"])
+		XCTAssertNil(json?["useDoubleTapOnly"])
+		XCTAssertNil(json?["doubleTapLockEnabled"])
 	}
 
 	private func loadFixture(named name: String) throws -> Data {

@@ -66,9 +66,6 @@ struct SettingsFeature {
     case setRecordingAudioBehavior(RecordingAudioBehavior)
     case toggleSuperFastMode(Bool)
     case setUseClipboardPaste(Bool)
-    case setDoubleTapLockEnabled(Bool)
-    case setUseDoubleTapOnly(Bool)
-    case setMinimumKeyTime(Double)
     case setOutputLanguage(String?)
     case setSelectedMicrophoneID(String?)
     case setSoundEffectsEnabled(Bool)
@@ -159,13 +156,6 @@ struct SettingsFeature {
     Reduce { state, action in
       switch action {
       case .binding:
-        let didNormalizeDoubleTapOnly = !state.hexSettings.doubleTapLockEnabled && state.hexSettings.useDoubleTapOnly
-        if didNormalizeDoubleTapOnly {
-          state.$hexSettings.withLock {
-            $0.useDoubleTapOnly = false
-          }
-        }
-
         return .none
 
       case .task:
@@ -385,25 +375,6 @@ struct SettingsFeature {
         return .run { _ in
           await recording.warmUpRecorder()
         }
-
-      case let .setDoubleTapLockEnabled(enabled):
-        state.$hexSettings.withLock {
-          $0.doubleTapLockEnabled = enabled
-          if !enabled {
-            $0.useDoubleTapOnly = false
-          }
-        }
-        return .none
-
-      case let .setUseDoubleTapOnly(enabled):
-        state.$hexSettings.withLock {
-          $0.useDoubleTapOnly = enabled && $0.doubleTapLockEnabled
-        }
-        return .none
-
-      case let .setMinimumKeyTime(value):
-        state.$hexSettings.withLock { $0.minimumKeyTime = value }
-        return .none
 
       case let .setOutputLanguage(language):
         state.$hexSettings.withLock { $0.outputLanguage = language }

@@ -34,10 +34,6 @@ struct TranscriptionFeature {
     case audioLevelUpdated(Meter)
 
     // Hotkey actions
-    case hotKeyPressed
-    case hotKeyReleased
-
-    // Recording flow
     case startRecording
     case stopRecording
 
@@ -89,18 +85,6 @@ struct TranscriptionFeature {
       case let .audioLevelUpdated(meter):
         state.meter = meter
         return .none
-
-      // MARK: - HotKey Flow
-
-      case .hotKeyPressed:
-        // If we're transcribing, send a cancel first. Otherwise start recording immediately.
-        // We'll decide later (on release) whether to keep or discard the recording.
-        return handleHotKeyPressed(isTranscribing: state.isTranscribing)
-
-      case .hotKeyReleased:
-        // If we're currently recording, then stop. Otherwise, just cancel
-        // the delayed "startRecording" effect if we never actually started.
-        return handleHotKeyReleased(isRecording: state.isRecording)
 
       // MARK: - Recording Flow
 
@@ -170,14 +154,10 @@ private extension TranscriptionFeature {
 
         // Always keep hotKeyProcessor in sync with current user hotkey preference
         hotKeyProcessor.hotkey = hexSettings.hotkey
-        let useDoubleTapOnly = hexSettings.doubleTapLockEnabled && hexSettings.useDoubleTapOnly
-        hotKeyProcessor.doubleTapLockEnabled = hexSettings.doubleTapLockEnabled
-        hotKeyProcessor.useDoubleTapOnly = useDoubleTapOnly
-        hotKeyProcessor.minimumKeyTime = hexSettings.minimumKeyTime
 
         switch inputEvent {
         case .keyboard(let keyEvent):
-          // If Escape is pressed with no modifiers while idle, let's treat that as `cancel`.
+          // If Escape is pressed with no modifiers while idle, treat that as cancel.
           if keyEvent.key == .escape, keyEvent.modifiers.isEmpty,
              hotKeyProcessor.state == .idle
           {
@@ -185,33 +165,20 @@ private extension TranscriptionFeature {
             return false
           }
 
-          // Process the key event
           switch hotKeyProcessor.process(keyEvent: keyEvent) {
           case .startRecording:
-            // If double-tap lock is triggered, we start recording immediately
-            if hotKeyProcessor.state == .doubleTapLock {
-              Task { await send(.startRecording) }
-            } else {
-              Task { await send(.hotKeyPressed) }
-            }
-            // If the hotkey is purely modifiers, return false to keep it from interfering with normal usage
-            // But if useDoubleTapOnly is true, always intercept the key
-            return useDoubleTapOnly || keyEvent.key != nil
+            Task { await send(.startRecording) }
+            return keyEvent.key != nil
 
           case .stopRecording:
-            Task { await send(.hotKeyReleased) }
-            return false // or `true` if you want to intercept
+            Task { await send(.stopRecording) }
+            return keyEvent.key != nil
 
           case .cancel:
             Task { await send(.cancel) }
             return true
 
-          case .discard:
-            Task { await send(.discard) }
-            return false // Don't intercept - let the key chord reach other apps
-
           case .none:
-            // If we detect repeated same chord, maybe intercept.
             if let pressedKey = keyEvent.key,
                pressedKey == hotKeyProcessor.hotkey.key,
                keyEvent.modifiers == hotKeyProcessor.hotkey.modifiers
@@ -222,17 +189,8 @@ private extension TranscriptionFeature {
           }
 
         case .mouseClick:
-          // Process mouse click - for modifier-only hotkeys, this may cancel/discard
-          switch hotKeyProcessor.processMouseClick() {
-          case .cancel:
-            Task { await send(.cancel) }
-            return false // Don't intercept the click itself
-          case .discard:
-            Task { await send(.discard) }
-            return false // Don't intercept the click itself
-          case .startRecording, .stopRecording, .none:
-            return false
-          }
+          _ = hotKeyProcessor.processMouseClick()
+          return false
         }
       }
 
@@ -255,28 +213,17 @@ private extension TranscriptionFeature {
   }
 }
 
-// MARK: - HotKey Press/Release Handlers
-
-private extension TranscriptionFeature {
-  func handleHotKeyPressed(isTranscribing: Bool) -> Effect<Action> {
-    // If already transcribing, cancel first. Otherwise start recording immediately.
-    guard isTranscribing else { return .send(.startRecording) }
-    return .concatenate(
-      .send(.cancel),
-      .send(.startRecording)
-    )
-  }
-
-  func handleHotKeyReleased(isRecording: Bool) -> Effect<Action> {
-    // Always stop recording when hotkey is released
-    return isRecording ? .send(.stopRecording) : .none
-  }
-}
-
 // MARK: - Recording Handlers
 
 private extension TranscriptionFeature {
   func handleStartRecording(_ state: inout State) -> Effect<Action> {
+    if state.isTranscribing {
+      return .concatenate(
+        .send(.cancel),
+        .send(.startRecording)
+      )
+    }
+
     guard state.transcriptionReadinessState.isAPIKeyConfigured else {
       return .merge(
         .send(.modelMissing),
@@ -317,26 +264,15 @@ private extension TranscriptionFeature {
     let startTime = state.recordingStartTime
     let duration = startTime.map { stopTime.timeIntervalSince($0) } ?? 0
 
-    let decision = RecordingDecisionEngine.decide(
-      .init(
-        hotkey: state.hexSettings.hotkey,
-        minimumKeyTime: state.hexSettings.minimumKeyTime,
-        recordingStartTime: state.recordingStartTime,
-        currentTime: stopTime
-      )
-    )
+    let decision = RecordingDecisionEngine.decide(elapsed: duration)
 
     let startStamp = startTime?.ISO8601Format() ?? "nil"
     let stopStamp = stopTime.ISO8601Format()
-    let minimumKeyTime = state.hexSettings.minimumKeyTime
-    let hotkeyHasKey = state.hexSettings.hotkey.key != nil
     transcriptionFeatureLogger.notice(
-      "Recording stopped duration=\(String(format: "%.3f", duration))s start=\(startStamp) stop=\(stopStamp) decision=\(String(describing: decision)) minimumKeyTime=\(String(format: "%.2f", minimumKeyTime)) hotkeyHasKey=\(hotkeyHasKey)"
+      "Recording stopped duration=\(String(format: "%.3f", duration))s start=\(startStamp) stop=\(stopStamp) decision=\(String(describing: decision))"
     )
 
     guard decision == .proceedToTranscription else {
-      // If the user recorded for less than minimumKeyTime and the hotkey is modifier-only,
-      // discard the audio to avoid accidental triggers.
       transcriptionFeatureLogger.notice("Discarding short recording per decision \(String(describing: decision))")
       return handleDiscard(&state)
     }

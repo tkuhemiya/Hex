@@ -25,22 +25,13 @@ public struct HexSettings: Codable, Equatable, Sendable {
 	public var useClipboardPaste: Bool
 	public var preventSystemSleep: Bool
 	public var recordingAudioBehavior: RecordingAudioBehavior
-	public var minimumKeyTime: Double
 	public var superFastModeEnabled: Bool
-	public var useDoubleTapOnly: Bool
-	public var doubleTapLockEnabled: Bool
 	public var outputLanguage: String?
 	public var selectedMicrophoneID: String?
 	public var hasCompletedStorageMigration: Bool
 	public var wordRemovalsEnabled: Bool
 	public var wordRemovals: [WordRemoval]
 	public var wordRemappings: [WordRemapping]
-
-	private mutating func normalizeDoubleTapSettings() {
-		if !doubleTapLockEnabled {
-			useDoubleTapOnly = false
-		}
-	}
 
 	public init(
 		soundEffectsEnabled: Bool = true,
@@ -52,10 +43,7 @@ public struct HexSettings: Codable, Equatable, Sendable {
 		useClipboardPaste: Bool = true,
 		preventSystemSleep: Bool = true,
 		recordingAudioBehavior: RecordingAudioBehavior = .doNothing,
-		minimumKeyTime: Double = HexCoreConstants.defaultMinimumKeyTime,
 		superFastModeEnabled: Bool = true,
-		useDoubleTapOnly: Bool = false,
-		doubleTapLockEnabled: Bool = true,
 		outputLanguage: String? = nil,
 		selectedMicrophoneID: String? = nil,
 		hasCompletedStorageMigration: Bool = false,
@@ -72,17 +60,13 @@ public struct HexSettings: Codable, Equatable, Sendable {
 		self.useClipboardPaste = useClipboardPaste
 		self.preventSystemSleep = preventSystemSleep
 		self.recordingAudioBehavior = recordingAudioBehavior
-		self.minimumKeyTime = minimumKeyTime
 		self.superFastModeEnabled = superFastModeEnabled
-		self.useDoubleTapOnly = useDoubleTapOnly
-		self.doubleTapLockEnabled = doubleTapLockEnabled
 		self.outputLanguage = outputLanguage
 		self.selectedMicrophoneID = selectedMicrophoneID
 		self.hasCompletedStorageMigration = hasCompletedStorageMigration
 		self.wordRemovalsEnabled = wordRemovalsEnabled
 		self.wordRemovals = wordRemovals
 		self.wordRemappings = wordRemappings
-		normalizeDoubleTapSettings()
 	}
 
 	public init(from decoder: Decoder) throws {
@@ -91,7 +75,6 @@ public struct HexSettings: Codable, Equatable, Sendable {
 		for field in HexSettingsSchema.fields {
 			try field.decode(into: &self, from: container)
 		}
-		normalizeDoubleTapSettings()
 		normalizeCloudOnlySettings()
 	}
 
@@ -122,10 +105,10 @@ private enum HexSettingKey: String, CodingKey, CaseIterable {
 	case preventSystemSleep
 	case recordingAudioBehavior
 	case pauseMediaOnRecord // Legacy
-	case minimumKeyTime
+	case minimumKeyTime // Legacy
 	case superFastModeEnabled
-	case useDoubleTapOnly
-	case doubleTapLockEnabled
+	case useDoubleTapOnly // Legacy
+	case doubleTapLockEnabled // Legacy
 	case outputLanguage
 	case selectedMicrophoneID
 	case hasCompletedStorageMigration
@@ -214,10 +197,10 @@ private enum HexSettingsSchema {
 				return defaultValue
 			}
 		).eraseToAny(),
-		SettingsField(.minimumKeyTime, keyPath: \.minimumKeyTime, default: defaults.minimumKeyTime).eraseToAny(),
 		SettingsField(.superFastModeEnabled, keyPath: \.superFastModeEnabled, default: defaults.superFastModeEnabled).eraseToAny(),
-		SettingsField(.useDoubleTapOnly, keyPath: \.useDoubleTapOnly, default: defaults.useDoubleTapOnly).eraseToAny(),
-		SettingsField(.doubleTapLockEnabled, keyPath: \.doubleTapLockEnabled, default: defaults.doubleTapLockEnabled).eraseToAny(),
+		HexSettingsSchema.legacyField(.minimumKeyTime, as: Double.self),
+		HexSettingsSchema.legacyField(.useDoubleTapOnly, as: Bool.self),
+		HexSettingsSchema.legacyField(.doubleTapLockEnabled, as: Bool.self),
 		SettingsField(
 			.outputLanguage,
 			keyPath: \.outputLanguage,
@@ -247,4 +230,14 @@ private enum HexSettingsSchema {
 			default: defaults.wordRemappings
 		).eraseToAny()
 	]
+
+	static func legacyField<T: Decodable>(_ key: HexSettingKey, as _: T.Type) -> AnySettingsField {
+		AnySettingsField(
+			key: key,
+			decode: { container, _ in
+				_ = try container.decodeIfPresent(T.self, forKey: key)
+			},
+			encode: { _, _ in }
+		)
+	}
 }

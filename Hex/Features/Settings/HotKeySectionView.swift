@@ -40,51 +40,8 @@ struct HotKeySectionView: View {
                 }
             }
 
-            Label {
-                Toggle(
-                    "Enable double-tap lock",
-                    isOn: Binding(
-                        get: { store.hexSettings.doubleTapLockEnabled },
-                        set: { store.send(.setDoubleTapLockEnabled($0)) }
-                    )
-                )
-            } icon: {
-                Image(systemName: "hand.tap")
-            }
-
-            // Double-tap only mode applies to key+modifier combinations.
-            if hotKey.key != nil {
-                Label {
-                    Toggle(
-                        "Use double-tap only",
-                        isOn: Binding(
-                            get: { store.hexSettings.useDoubleTapOnly },
-                            set: { store.send(.setUseDoubleTapOnly($0)) }
-                        )
-                    )
-                        .disabled(!store.hexSettings.doubleTapLockEnabled)
-                } icon: {
-                    Image(systemName: "hand.tap.fill")
-                }
-            }
-
-            // Minimum key time (for modifier-only shortcuts)
-            if store.hexSettings.hotkey.key == nil {
-                Label {
-                    Slider(
-                        value: Binding(
-                            get: { store.hexSettings.minimumKeyTime },
-                            set: { store.send(.setMinimumKeyTime($0)) }
-                        ),
-                        in: 0.0 ... 2.0,
-                        step: 0.1
-                    ) {
-                        Text("Ignore below \(store.hexSettings.minimumKeyTime, specifier: "%.1f")s")
-                    }
-                } icon: {
-                    Image(systemName: "clock")
-                }
-            }
+            Text("Press once to start dictating, press again to stop.")
+                .settingsCaption()
         }
         .enableInjection()
     }
