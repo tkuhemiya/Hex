@@ -35,7 +35,7 @@ struct RecordingClient {
   var getDefaultInputDeviceName: @Sendable () async -> String? = { nil }
   var warmUpRecorder: @Sendable () async -> Void = {}
   var cleanup: @Sendable () async -> Void = {}
-  var setRealtimeSampleHandler: @Sendable (@escaping @Sendable ([Float]) -> Void) -> Void = { _ in }
+  var setRealtimeSampleHandler: @Sendable (@escaping @Sendable ([Float]) -> Void) async -> Void = { _ in }
   var clearRealtimeSampleHandler: @Sendable () async -> Void = {}
 }
 
