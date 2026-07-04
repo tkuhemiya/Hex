@@ -18,6 +18,8 @@ final class InMemoryFallbackRecorder {
   private var converter: AVAudioConverter?
   private let samples = GrowableFloatPCMBuffer()
   private var isRecording = false
+  /// Optional tap for streaming capture samples elsewhere (e.g. Realtime transcription).
+  var onRecordedSamples: (@Sendable ([Float]) -> Void)?
 
   init(meterContinuation: AsyncStream<Meter>.Continuation) {
     self.meterContinuation = meterContinuation
@@ -97,6 +99,7 @@ final class InMemoryFallbackRecorder {
 
     let sampleCount = Int(converted.frameLength)
     samples.append(UnsafeBufferPointer(start: channelData, count: sampleCount))
+    onRecordedSamples?(Array(UnsafeBufferPointer(start: channelData, count: sampleCount)))
     meterContinuation.yield(meter(for: channelData, count: sampleCount))
   }
 

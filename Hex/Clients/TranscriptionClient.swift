@@ -15,6 +15,10 @@ private let transcriptionLogger = HexLog.transcription
 struct TranscriptionClient {
 	var transcribe: @Sendable (Data, String, TranscriptionOptions, @escaping (Progress) -> Void) async throws -> String
 	var isReady: @Sendable () async -> Bool = { false }
+	var beginRealtimeSession: @Sendable (String, TranscriptionOptions) async throws -> Void = { _, _ in }
+	var appendRealtimeAudio: @Sendable ([Float]) async throws -> Void = { _ in }
+	var finishRealtimeSession: @Sendable () async throws -> String = { "" }
+	var cancelRealtimeSession: @Sendable () async -> Void = {}
 }
 
 extension TranscriptionClient: DependencyKey {
@@ -22,13 +26,21 @@ extension TranscriptionClient: DependencyKey {
 		let live = TranscriptionClientLive()
 		return Self(
 			transcribe: { try await live.transcribe(audioData: $0, model: $1, options: $2, progressCallback: $3) },
-			isReady: { await live.isReady() }
+			isReady: { await live.isReady() },
+			beginRealtimeSession: { try await live.beginRealtimeSession(model: $0, options: $1) },
+			appendRealtimeAudio: { try await live.appendRealtimeAudio(samples: $0) },
+			finishRealtimeSession: { try await live.finishRealtimeSession() },
+			cancelRealtimeSession: { await live.cancelRealtimeSession() }
 		)
 	}
 
 	static let testValue = Self(
 		transcribe: { _, _, _, _ in "" },
-		isReady: { true }
+		isReady: { true },
+		beginRealtimeSession: { _, _ in },
+		appendRealtimeAudio: { _ in },
+		finishRealtimeSession: { "" },
+		cancelRealtimeSession: {}
 	)
 }
 
@@ -40,6 +52,8 @@ extension DependencyValues {
 }
 
 struct TranscriptionClientLive: Sendable {
+	private let realtimeCoordinator = RealtimeTranscriptionCoordinator()
+
 	func isReady() async -> Bool {
 		guard let key = APIKeyClient.liveValue.getOpenAIKey(), !key.isEmpty else {
 			return false
@@ -80,6 +94,33 @@ struct TranscriptionClientLive: Sendable {
 		transcriptionLogger.info("Cloud transcription took \(String(format: "%.2f", Date().timeIntervalSince(startTx)))s")
 		transcriptionLogger.info("Cloud request total elapsed \(String(format: "%.2f", Date().timeIntervalSince(startAll)))s")
 		return text
+	}
+
+	func beginRealtimeSession(model: String, options: TranscriptionOptions) async throws {
+		guard CloudTranscriptionModel.isCloud(model) else {
+			throw TranscriptionClientError.unsupportedModel(model)
+		}
+
+		let apiKey = APIKeyClient.liveValue.getOpenAIKey()
+		transcriptionLogger.notice("Starting realtime transcription session model=\(model)")
+		try await realtimeCoordinator.start(model: model, language: options.language, apiKey: apiKey)
+	}
+
+	func appendRealtimeAudio(samples: [Float]) async throws {
+		try await realtimeCoordinator.append(samples: samples)
+	}
+
+	func finishRealtimeSession() async throws -> String {
+		let start = Date()
+		let text = try await realtimeCoordinator.finish()
+		transcriptionLogger.info(
+			"Realtime transcription commit-to-text took \(String(format: "%.2f", Date().timeIntervalSince(start)))s"
+		)
+		return text
+	}
+
+	func cancelRealtimeSession() async {
+		await realtimeCoordinator.cancel()
 	}
 }
 

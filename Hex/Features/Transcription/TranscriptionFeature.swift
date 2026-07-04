@@ -235,6 +235,10 @@ private extension TranscriptionFeature {
     state.recordingStartTime = startTime
     transcriptionFeatureLogger.notice("Recording started at \(startTime.ISO8601Format())")
 
+    let model = state.hexSettings.selectedModel
+    let language = state.hexSettings.outputLanguage
+    let useRealtimeTranscription = RealtimeTranscriptionSettings.isEnabled
+
     // Prevent system sleep during recording
     return .merge(
       .cancel(id: CancelID.recordingCleanup),
@@ -251,6 +255,24 @@ private extension TranscriptionFeature {
           }
           return
         }
+
+        if useRealtimeTranscription {
+          do {
+            let options = TranscriptionOptions(language: language)
+            try await transcription.beginRealtimeSession(model, options)
+            await recording.setRealtimeSampleHandler { samples in
+              Task {
+                try? await transcription.appendRealtimeAudio(samples)
+              }
+            }
+          } catch {
+            transcriptionFeatureLogger.error(
+              "Failed to start realtime transcription session: \(error.localizedDescription)"
+            )
+            await transcription.cancelRealtimeSession()
+          }
+        }
+
         await recording.startRecording()
       }
       .cancellable(id: CancelID.recordingStart, cancelInFlight: true)
@@ -282,6 +304,7 @@ private extension TranscriptionFeature {
     state.error = nil
     let model = state.hexSettings.selectedModel
     let language = state.hexSettings.outputLanguage
+    let useRealtimeTranscription = RealtimeTranscriptionSettings.isEnabled
 
     state.isPrewarming = true
 
@@ -291,22 +314,35 @@ private extension TranscriptionFeature {
         await sleepManagement.allowSleep()
 
         do {
-          let capturedAudio = await recording.stopRecording()
-          guard !Task.isCancelled, !capturedAudio.isEmpty else { return }
-          soundEffect.play(.stopRecording)
+          if useRealtimeTranscription {
+            await recording.clearRealtimeSampleHandler()
+            _ = await recording.stopRecording()
+            guard !Task.isCancelled else { return }
+            soundEffect.play(.stopRecording)
 
-          let options = TranscriptionOptions(language: language)
-          let result = try await transcription.transcribe(
-            capturedAudio.wavData,
-            model,
-            options
-          ) { _ in }
+            let result = try await transcription.finishRealtimeSession()
+            transcriptionFeatureLogger.notice("Realtime transcribed text length \(result.count)")
+            await send(.transcriptionResult(result, duration))
+          } else {
+            let capturedAudio = await recording.stopRecording()
+            guard !Task.isCancelled, !capturedAudio.isEmpty else { return }
+            soundEffect.play(.stopRecording)
 
-          transcriptionFeatureLogger.notice(
-            "Transcribed \(capturedAudio.wavData.count) bytes to text length \(result.count)"
-          )
-          await send(.transcriptionResult(result, duration))
+            let options = TranscriptionOptions(language: language)
+            let result = try await transcription.transcribe(
+              capturedAudio.wavData,
+              model,
+              options
+            ) { _ in }
+
+            transcriptionFeatureLogger.notice(
+              "Transcribed \(capturedAudio.wavData.count) bytes to text length \(result.count)"
+            )
+            await send(.transcriptionResult(result, duration))
+          }
         } catch {
+          await transcription.cancelRealtimeSession()
+          await recording.clearRealtimeSampleHandler()
           transcriptionFeatureLogger.error("Transcription failed: \(error.localizedDescription)")
           await send(.transcriptionError(error))
         }
@@ -406,6 +442,8 @@ private extension TranscriptionFeature {
           soundEffect.play(.cancel)
           return
         }
+        await recording.clearRealtimeSampleHandler()
+        await transcription.cancelRealtimeSession()
         _ = await recording.stopRecording()
         guard !Task.isCancelled else { return }
         soundEffect.play(.cancel)
@@ -424,6 +462,8 @@ private extension TranscriptionFeature {
       .run { [sleepManagement] _ in
         // Allow system to sleep again
         await sleepManagement.allowSleep()
+        await recording.clearRealtimeSampleHandler()
+        await transcription.cancelRealtimeSession()
         _ = await recording.stopRecording()
         guard !Task.isCancelled else { return }
       }

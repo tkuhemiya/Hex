@@ -35,6 +35,8 @@ struct RecordingClient {
   var getDefaultInputDeviceName: @Sendable () async -> String? = { nil }
   var warmUpRecorder: @Sendable () async -> Void = {}
   var cleanup: @Sendable () async -> Void = {}
+  var setRealtimeSampleHandler: @Sendable (@escaping @Sendable ([Float]) -> Void) -> Void = { _ in }
+  var clearRealtimeSampleHandler: @Sendable () async -> Void = {}
 }
 
 extension RecordingClient: DependencyKey {
@@ -51,7 +53,9 @@ extension RecordingClient: DependencyKey {
       getAvailableInputDevices: { await live.getAvailableInputDevices() },
       getDefaultInputDeviceName: { await live.getDefaultInputDeviceName() },
       warmUpRecorder: { await live.warmUpRecorder() },
-      cleanup: { await live.cleanup() }
+      cleanup: { await live.cleanup() },
+      setRealtimeSampleHandler: { await live.setRealtimeSampleHandler($0) },
+      clearRealtimeSampleHandler: { await live.clearRealtimeSampleHandler() }
     )
   }
 }
@@ -1305,6 +1309,16 @@ actor RecordingClientLive {
     stopCaptureController(reason: "warm-up-standard")
     stopFallbackRecorder(reason: "warm-up-standard")
     recordingLogger.debug("Standard mode uses on-demand capture engine startup; skipping idle warm-up")
+  }
+
+  func setRealtimeSampleHandler(_ handler: @escaping @Sendable ([Float]) -> Void) {
+    captureController.onRecordedSamples = handler
+    fallbackRecorder.onRecordedSamples = handler
+  }
+
+  func clearRealtimeSampleHandler() {
+    captureController.onRecordedSamples = nil
+    fallbackRecorder.onRecordedSamples = nil
   }
 
   /// Release recorder resources. Call on app termination.

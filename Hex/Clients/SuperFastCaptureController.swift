@@ -118,6 +118,8 @@ final class SuperFastCaptureController {
   private var recentCallbackIntervals: [TimeInterval] = []
   private var recentBufferDurations: [TimeInterval] = []
   private let onEngineConfigurationChange: @Sendable () -> Void
+  /// Optional tap for streaming capture samples elsewhere (e.g. Realtime transcription).
+  var onRecordedSamples: (@Sendable ([Float]) -> Void)?
 
   init(
     meterContinuation: AsyncStream<Meter>.Continuation,
@@ -254,6 +256,7 @@ final class SuperFastCaptureController {
     try startIfNeeded(reason: "begin-recording", keepWarmBuffer: mode.keepsWarmBuffer)
 
     var startError: Error?
+    let sampleHandler = onRecordedSamples
     processingQueue.sync {
       do {
         let sampleBuffer = GrowableFloatPCMBuffer()
@@ -263,6 +266,7 @@ final class SuperFastCaptureController {
         let prependedDuration = Double(preRollSamples.count) / SuperFastCaptureConstants.sampleRate
         if !preRollSamples.isEmpty {
           sampleBuffer.append(preRollSamples)
+          sampleHandler?(preRollSamples)
         }
 
         logger.notice(
@@ -345,6 +349,9 @@ final class SuperFastCaptureController {
     }
 
     recording.samples.append(UnsafeBufferPointer(start: samples, count: sampleCount))
+    if let onRecordedSamples {
+      onRecordedSamples(Array(UnsafeBufferPointer(start: samples, count: sampleCount)))
+    }
   }
 
   private func convert(_ inputBuffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
